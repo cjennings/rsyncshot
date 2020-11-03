@@ -1,0 +1,152 @@
+#!/bin/bash
+#
+# rsyncshot
+# Craig Jennings craigmartinjennings@gmail.com
+# Inspired by Mike Rubel: http://www.mikerubel.org/computers/rsync_snapshots/
+
+# uncomment next 4 lines for debugging output
+# exec 5> >(logger -t $0)
+# BASH_XTRACEFD="5"
+# PS4='$LINENO: '
+# set -x
+
+# default locations for setup
+SCRIPTLOC=/usr/local/bin/rsyncshot;
+DESTINATION=/home/cjennings/Backup;
+
+INSTALLHOME=/etc/rsyncshot
+LOGHOME=/var/log/rsyncshot.log;
+
+INCLUDES="$INSTALLHOME/include.txt";
+EXCLUDES="$INSTALLHOME/exclude.txt";
+
+# default cron job entries
+# hourly -- hourly on minute 0 from 1am to 11pm
+CRON_H="0 1-23 * * * $SCRIPTLOC hourly 22";
+# daily -- midnight, Monday - Saturday.
+CRON_D="0 0 * * 1-6 $SCRIPTLOC daily 6";
+# weekly -- Sundays at midnight
+CRON_W="0 0 * * 7 $SCRIPTLOC weekly 51";
+
+# print help
+help()
+{
+    echo ""
+    echo "rsyncshot - compact snapshots on Linux using rsync and hard links."
+    echo "Usage: "
+    echo "rsyncshot <name> <number of backups to retain>"
+    echo "          setup (installs rsyncshot and cron jobs)"
+    echo "          help  (prints this info)"
+    echo "Notes:"
+    echo "- install and log locations defined in script."
+}
+
+# display error and exit
+error()
+{
+    echo "ERROR: $0: $@" 1>&2;
+    echo "See \"rsyncshot help\" for usage."
+    exit 1;
+}
+
+# copy files, create exclude, and setup cron job
+setup()
+{
+    # copy this file to directory on path
+    cp -f $0 /usr/local/bin
+    echo "$0 copied to /usr/local/bin"
+    
+    # make install home if it doesn't exist;
+    if [ ! -d $INSTALLHOME ]; then
+	mkdir -p $INSTALLHOME;
+	"Created install home at $INSTALLHOME.";
+    fi
+
+    # create includes file and add default entries
+    if [ -f $INCLUDES ]; then rm $INCLUDES; fi
+    printf "/home /etc /usr/local/bin" >> $INCLUDES;
+    echo "modify include file at $INCLUDES";
+
+    # create excludes file and add default entries
+    if [ -f $EXCLUDES ]; then rm $EXCLUDES; fi
+    printf "*.pyc\n*.pyo\n*.class\n*.elc\n*.o\n*.tmp\n.cache*" >>  $EXCLUDES;
+    echo "modify exclude file at $EXCLUDES";
+
+    # write out current crontab, append default entries, and install
+    crontab -l > crontemp;
+    echo "$CRON_H >> $LOGHOME 2>&1" >> crontemp;
+    echo "$CRON_D >> $LOGHOME 2>&1" >> crontemp;
+    echo "$CRON_W >> $LOGHOME 2>&1">> crontemp;
+    crontab crontemp;
+    rm crontemp;
+    echo "hourly, daily, and weekly cron jobs installed.";
+}
+
+# if user requested help, display and exit.
+if [ "$TYPE" = "HELP" ]; then help; exit; fi
+
+# ensure running as root
+if [ "$EUID" -ne 0 ]; then error "This script must be run as root."; fi
+
+# display how the script was started
+echo "rsyncshot invoked on `date -u` with: $0 $1 $2";
+
+# validate first arg is alpha chars and make it case insensitive
+if ! [[ $1 =~ [a-zA-Z] ]]; then error "snapshot type not recognized."; fi
+TYPE=$(tr '[a-z]' '[A-Z]' <<< $1);
+
+# if user requested setup,  and exit.
+if [ "$TYPE" = "SETUP" ]; then setup; exit; fi
+
+# Validate second arg is numeric
+if ! [[ $2 =~ [0-9] ]]; then error "max snapshots not a number."; fi
+MAX=$(($2-1));
+
+# validate include file (source directories)
+if [ ! -f "$INCLUDES" ]; then error "include file $INCLUDES not found."; fi
+SOURCES=$(<$INCLUDES);
+for SOURCE in $SOURCES
+do
+    if [ ! -d "$SOURCE" ]; then error "source $SOURCE not found"; fi
+done
+
+# validate exclude file (exclusion patters)
+if [ ! -f "$EXCLUDES" ]; then error "Exclude file $EXCLUDES not found."; fi
+
+# sync each source directories in turn
+for SOURCE in $SOURCES
+do
+    rsync -avh -i --times \
+    	  --delete  --delete-excluded \
+    	  --exclude-from=$EXCLUDES \
+    	  --update $SOURCE $DESTINATION/latest ;
+done
+
+# update the time of latest to reflect snapshot time
+# touch $DESTINATION/latest;
+
+# delete the last snapshot if it exists
+if [ -d $DESTINATION/$TYPE.$MAX ]; then
+    rm -rf $DESTINATION/$TYPE.$MAX;
+fi
+
+# rotate snapshots descending
+for (( start=$(($MAX)); start>=0; start--)); do
+    end=$(($start+1));
+	if [ -d $DESTINATION/$TYPE.$start ]; then
+	    mv $DESTINATION/$TYPE.$start $DESTINATION/$TYPE.$end;
+	fi
+done
+
+# touch the directory for a timestamp 
+touch $DESTINATION/latest
+
+# make a hard-link-only copy into $TYPE.0
+cp -al $DESTINATION/latest $DESTINATION/$TYPE.0;
+
+# make the directory $TYPE.0 read-only
+chmod -w $DESTINATION/$TYPE.0
+
+# print end time and exit
+echo "rsyncshot completed `date -u` ";
+exit 0;
