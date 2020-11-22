@@ -1,7 +1,5 @@
 * rsyncshot
 Linux backups with hard links, rsync, cron, and bash
+Inspired by http://www.mikerubel.org/computers/rsync_snapshots/
 
-* include and exclude lists are kept in /etc/rsyncshot
-* include indicates what directories should be included in the snapshot
-* exclude indicates what file (patterns) should be excluded from the snapshot
-* running rsyncshot setup 
+
