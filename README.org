@@ -1,5 +1,5 @@
 * rsyncshot
-Linux backups with hard links, rsync, cron, and bash
+Linux backups with hard links, rsync, cron, and bash. 
 Inspired by http://www.mikerubel.org/computers/rsync_snapshots/
 
 
