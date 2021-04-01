@@ -1,0 +1,6 @@
+* rsyncshot open
+** backup drive should have a command line switch
+** backups should be contained in a subdirectory 
+** backup limit should be optional and have sane limits
+** backup pruning should be more robust
+* rsyncshot closed
