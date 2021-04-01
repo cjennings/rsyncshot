@@ -12,7 +12,7 @@
 
 # default locations for setup
 SCRIPTLOC=/usr/local/bin/rsyncshot;
-DESTINATION=/home/cjennings/Backup;
+DESTINATION=/media/backup;
 
 INSTALLHOME=/etc/rsyncshot
 LOGHOME=/var/log/rsyncshot.log;
