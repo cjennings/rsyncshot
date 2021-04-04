@@ -1,11 +1,25 @@
+* rsyncshot
+:PROPERTIES:
+:COMMENTS: org
+:TANGLE:   rsyncshot
+:END:
+Craig Jennings craigmartinjennings@gmail.com
+Inspired by Mike Rubel: http://www.mikerubel.org/computers/rsync_snapshots/
+#+begin_SRC sh :tangle yes 
 #!/bin/bash
-
+#+end_SRC
+** Debugging
+#+begin_SRC sh :tangle yes
 # uncomment next 4 lines for debugging output
 # exec 5> >(logger -t $0)
 # BASH_XTRACEFD="5"
 # PS4='$LINENO: '
 # set -x
-
+#+end_SRC
+** Config
+*** Default Locations
+Default locations for setup
+#+begin_SRC sh :tangle yes
 SCRIPTLOC=/usr/local/bin/rsyncshot;
 DESTINATION=/media/backup;
 
@@ -14,11 +28,20 @@ LOGHOME=/var/log/rsyncshot.log;
 
 INCLUDES="$INSTALLHOME/include.txt";
 EXCLUDES="$INSTALLHOME/exclude.txt";
-
+#+end_SRC
+*** Default Cron Job Entries
+Default cron job entries
+CRON_H = hourly on minute 0 from 1am to 11pm
+CRON_D = daily at midnight, Monday - Saturday
+CRON_W = weekly at midnight on Sundays
+#+begin_SRC sh :tangle yes
 CRON_H="0 1-23 * * * $SCRIPTLOC hourly 22";
 CRON_D="0 0 * * 1-6 $SCRIPTLOC daily 6";
 CRON_W="0 0 * * 7 $SCRIPTLOC weekly 51";
-
+#+end_SRC
+** Functions
+*** Help
+#+begin_SRC sh :tangle yes
 help()
 {
     echo ""
@@ -33,13 +56,18 @@ help()
     echo "Notes:"
     echo "- install and log locations defined in script."
 
+#+end_SRC
+*** Error
+#+begin_SRC sh :tangle yes
 error()
 {
     echo "ERROR: $0: $@" 1>&2;
     echo "See \"rsyncshot help\" for usage."
     exit 1;
 }
-
+#+end_SRC
+*** Setup
+#+begin_SRC sh :tangle yes
 setup()
 {
     # copy this file to directory on path
@@ -71,29 +99,55 @@ setup()
     rm crontemp;
     echo "hourly, daily, and weekly cron jobs installed.";
 }
-
+#+end_SRC
+** Script
+*** Check Help Option
+If user requested help, display and exit
+#+begin_SRC sh :tangle yes
 if [ "$TYPE" = "HELP" ]; then help; exit; fi
-
+#+end_SRC
+*** Ensure Root
+Ensure we're running as root
+#+begin_SRC sh :tangle yes
 if [ "$EUID" -ne 0 ]; then error "This script must be run as root."; fi
-
+#+end_SRC
+*** Display How Script Was Started
+Display how the script was started
+#+begin_SRC sh :tangle yes
 echo "rsyncshot invoked on `date -u` with: $0 $1 $2";
-
+#+end_SRC
+*** Parameter Validation
+Validate first arg is alpha chars and make it case insensitive. If user requested setup, call function and exit.
+#+begin_SRC sh :tangle yes
 if ! [[ $1 =~ [a-zA-Z] ]]; then error "snapshot type not recognized."; fi
 TYPE=$(tr '[a-z]' '[A-Z]' <<< $1);
 if [ "$TYPE" = "SETUP" ]; then setup; exit; fi
-
+#+end_SRC
+*** Validate Max Snapshots
+Validate second arg (max snapshots) is numeric. 
+#+begin_SRC sh :tangle yes
 if ! [[ $2 =~ [0-9] ]]; then error "max snapshots not a number."; fi
 MAX=$(($2-1));
-
+#+end_SRC
+*** Validate Include File
+Validate include file (source directories)
+#+begin_SRC sh :tangle yes
 if [ ! -f "$INCLUDES" ]; then error "include file $INCLUDES not found."; fi
 SOURCES=$(<$INCLUDES);
 for SOURCE in $SOURCES
 do
     if [ ! -d "$SOURCE" ]; then error "source $SOURCE not found"; fi
 done
-
+#+end_SRC
+*** Validate Exclude File
+Validate exclude file (exclusion patterns)
+#+begin_SRC sh :tangle yes
 if [ ! -f "$EXCLUDES" ]; then error "Exclude file $EXCLUDES not found."; fi
+#+end_SRC
 
+*** Sync
+Perform the sync, each directory in turn
+#+begin_SRC sh :tangle yes
 for SOURCE in $SOURCES
 do
     rsync -avh -i --times \
@@ -101,23 +155,42 @@ do
     	  --exclude-from=$EXCLUDES \
     	  --update $SOURCE $DESTINATION/latest ;
 done
-
+#+end_SRC
+*** Delete Old Snapshot
+Delete the snapshot to go over max
+#+begin_SRC sh :tangle yes
 if [ -d $DESTINATION/$TYPE.$MAX ]; then
     rm -rf $DESTINATION/$TYPE.$MAX;
 fi
-
+#+end_SRC
+*** Rotate Snapshots
+Rotate snapshots descending
+#+begin_SRC sh :tangle yes
 for (( start=$(($MAX)); start>=0; start--)); do
     end=$(($start+1));
 	if [ -d $DESTINATION/$TYPE.$start ]; then
 	    mv $DESTINATION/$TYPE.$start $DESTINATION/$TYPE.$end;
 	fi
 done
-
+#+end_SRC
+*** Set Directory Timestamp
+Touch the directory for a timestamp 
+#+begin_SRC sh :tangle yes
 touch $DESTINATION/latest
-
+#+end_SRC
+*** Hard Link to Destination
+Make a hard-link-only copy into $TYPE.0
+#+begin_SRC sh :tangle yes
 cp -al $DESTINATION/latest $DESTINATION/$TYPE.0;
-
+#+end_SRC
+*** Make Directory Type Read-Only
+Make the directory $TYPE.0 read-only
+#+begin_SRC sh :tangle yes
 chmod -w $DESTINATION/$TYPE.0
-
+#+end_SRC
+*** Print Time and Exit
+Print end time and exit
+#+begin_SRC sh :tangle yes
 echo "rsyncshot completed `date -u` ";
 exit 0;
+#+end_SRC
