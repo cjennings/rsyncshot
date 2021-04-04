@@ -1,10 +1,18 @@
 #!/bin/bash
+# rsyncshot
+
+# Craig Jennings craigmartinjennings@gmail.com
+# Inspired by Mike Rubel: http://www.mikerubel.org/computers/rsync_snapshots/
+
+# Debugging
 
 # uncomment next 4 lines for debugging output
 # exec 5> >(logger -t $0)
 # BASH_XTRACEFD="5"
 # PS4='$LINENO: '
 # set -x
+
+# Default Locations For Setup
 
 SCRIPTLOC=/usr/local/bin/rsyncshot;
 DESTINATION=/media/backup;
@@ -15,9 +23,16 @@ LOGHOME=/var/log/rsyncshot.log;
 INCLUDES="$INSTALLHOME/include.txt";
 EXCLUDES="$INSTALLHOME/exclude.txt";
 
+# Default Cron Job Entries
+# CRON_H = hourly on minute 0 from 1am to 11pm
+# CRON_D = daily at midnight, Monday - Saturday
+# CRON_W = weekly at midnight on Sundays
+
 CRON_H="0 1-23 * * * $SCRIPTLOC hourly 22";
 CRON_D="0 0 * * 1-6 $SCRIPTLOC daily 6";
 CRON_W="0 0 * * 7 $SCRIPTLOC weekly 51";
+
+# Help
 
 help()
 {
@@ -33,12 +48,16 @@ help()
     echo "Notes:"
     echo "- install and log locations defined in script."
 
+# Error
+
 error()
 {
     echo "ERROR: $0: $@" 1>&2;
     echo "See \"rsyncshot help\" for usage."
     exit 1;
 }
+
+# Setup
 
 setup()
 {
@@ -72,18 +91,30 @@ setup()
     echo "hourly, daily, and weekly cron jobs installed.";
 }
 
+# Check Help Option
+
 if [ "$TYPE" = "HELP" ]; then help; exit; fi
+
+# Ensure Root
 
 if [ "$EUID" -ne 0 ]; then error "This script must be run as root."; fi
 
+# Display How Script Was Started
+
 echo "rsyncshot invoked on `date -u` with: $0 $1 $2";
+
+# Parameter Validation
 
 if ! [[ $1 =~ [a-zA-Z] ]]; then error "snapshot type not recognized."; fi
 TYPE=$(tr '[a-z]' '[A-Z]' <<< $1);
 if [ "$TYPE" = "SETUP" ]; then setup; exit; fi
 
+# Validate Max Snapshots
+
 if ! [[ $2 =~ [0-9] ]]; then error "max snapshots not a number."; fi
 MAX=$(($2-1));
+
+# Validate Include File (Source Directories) Exist
 
 if [ ! -f "$INCLUDES" ]; then error "include file $INCLUDES not found."; fi
 SOURCES=$(<$INCLUDES);
@@ -92,7 +123,11 @@ do
     if [ ! -d "$SOURCE" ]; then error "source $SOURCE not found"; fi
 done
 
+# Validate Exclude File (Exclusion Patterns) Exist
+
 if [ ! -f "$EXCLUDES" ]; then error "Exclude file $EXCLUDES not found."; fi
+
+# Sync Each Directory In Turn
 
 for SOURCE in $SOURCES
 do
@@ -102,9 +137,13 @@ do
     	  --update $SOURCE $DESTINATION/latest ;
 done
 
+# Delete Max+1 Snapshot If Exists
+
 if [ -d $DESTINATION/$TYPE.$MAX ]; then
     rm -rf $DESTINATION/$TYPE.$MAX;
 fi
+
+# Rotate Snapshots Descending
 
 for (( start=$(($MAX)); start>=0; start--)); do
     end=$(($start+1));
@@ -113,11 +152,19 @@ for (( start=$(($MAX)); start>=0; start--)); do
 	fi
 done
 
+# Reset Directory Timestamp
+
 touch $DESTINATION/latest
+
+# Hard Link Only Copy to Destination
 
 cp -al $DESTINATION/latest $DESTINATION/$TYPE.0;
 
+# Make Directory Type Read-Only
+
 chmod -w $DESTINATION/$TYPE.0
+
+# Print Time and Exit
 
 echo "rsyncshot completed `date -u` ";
 exit 0;
