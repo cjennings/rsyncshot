@@ -5,7 +5,7 @@ Inspired by http://www.mikerubel.org/computers/rsync_snapshots/
 ** Simple Setup
 rsyncshot installs itself. To setup, just run the following commands: 
 #+begin_SRC sh
-curl -LO https://raw.githubusercontent.com/cjennings/rsyncshot/main/rsyncshot
+wget https://raw.githubusercontent.com/cjennings/rsyncshot/main/rsyncshot
 sudo bash ./rsyncshot setup
 #+end_SRC
 ** Automatic Hourly/Daily/Weekly Schedule via Cron
