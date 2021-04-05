@@ -30,10 +30,13 @@ rsyncshot manual 100
 
 ** Filtering
 Specify which directories to backup by editing /etc/rsyncshot/includes.txt. The defaults are:
+#+begin_list
   - /home
   - /etc 
   - /usr/local/bin
+#+end_list
 Specify what filetype patterns to exclude by editing /etc/rsyncshot/excludes.txt. The defaults are:
+#+begin_list
   - *.pyc
   - *.pyo
   - *.class
@@ -41,6 +44,7 @@ Specify what filetype patterns to exclude by editing /etc/rsyncshot/excludes.txt
   - *.o
   - *.tmp
   - .cache*
+#+end_list
 ** A Few Safeguards
 - rsyncshot separates backups by the machine's name. Use one external drive to backup multiple machines without conflicts. 
 - rsyncshot will validate the specified source directories exist before beginning the backup. 
