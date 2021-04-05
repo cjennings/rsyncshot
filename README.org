@@ -1,5 +1,58 @@
-* rsyncshot
+* About rsyncshot
 Linux backups with hard links, rsync, cron, and bash. 
 Inspired by http://www.mikerubel.org/computers/rsync_snapshots/
+* Usage
+** Simple Setup
+rsyncshot installs itself. To setup, just run the following commands: 
+#+begin_SRC sh
+curl -LO https://git.io/JYSMS
+sudo sh ./rsyncshot setup
+#+end_SRC
+** Automatic Hourly/Daily/Weekly Schedule via Cron
+rsyncshow will install a default schedule: 
+- every hour at the top of the hour
+- every day at midnight
+- every week on Sunday at midnight 
 
+Edit the schedule with: 
+#+begin_SRC sh
+sudo crontab -e 
+#+end_SRC
+** Manual Backups
+Manual backups in the terminal with two arguments: 
+- TYPE is a way to group backups together. Automatic backups will have the TYPE as HOURLY, DAILY, or WEEKLY. But you can give your manual backups any TYPE you wish. 
+- MAX is the maximum number of backups before the oldest gets removed. 
 
+For instance: 
+#+begin_SRC sh
+rsyncshot manual 100
+#+end_SRC
+
+** Filtering
+Specify which directories to backup by editing /etc/rsyncshot/includes.txt. The defaults are:
+  - /home
+  - /etc 
+  - /usr/local/bin
+Specify what filetype patterns to exclude by editing /etc/rsyncshot/excludes.txt. The defaults are:
+  - *.pyc
+  - *.pyo
+  - *.class
+  - *.elc
+  - *.o
+  - *.tmp
+  - .cache*
+** A Few Safeguards
+- rsyncshot separates backups by the machine's name. Use one external drive to backup multiple machines without conflicts. 
+- rsyncshot will validate the specified source directories exist before beginning the backup. 
+- rsyncshot validates it's backing up to a mounted drive. If the drive isn't mounted, rsyncshot attempts to mount it. 
+- Backup directory permissions are changed to read-only to avoid inadvertent deletion.
+- rsyncshot logs the details of all runs to /var/log/rsyncshot.log. 
+** Requirements
+- Cron
+- Bash 
+- Grep 
+- Rsync
+* Notes
+rsyncshot is a simple Bash script and an experiment in [[https://en.wikipedia.org/wiki/Literate][literate programming]] using Emacs. The script is generated from the .org file. 
+
+rsyncshot isn't production software, even though the underlying utilities are. 
