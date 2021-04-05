@@ -1,5 +1,6 @@
 * rsyncshot
-#+begin_SRC sh :tangle rsyncshot :comments org :shebang "#!/bin/bash"
+#+begin_SRC sh :tangle rsyncshot :comments no :shebang "#!/bin/bash"
+# rsyncshot
 # Craig Jennings craigmartinjennings@gmail.com
 # Inspired by Mike Rubel: http://www.mikerubel.org/computers/rsync_snapshots/
 #+end_SRC
@@ -12,15 +13,25 @@
 # set -x
 #+end_SRC
 * Default Locations For Setup
+Modify BACKUPLOCATION to point to the mount point of your backup 
 #+begin_SRC sh :tangle rsyncshot :comments org
+MOUNTPOINT=/media/backup;
 SCRIPTLOC=/usr/local/bin/rsyncshot;
-DESTINATION=/media/backup;
+DESTINATION=$MOUNTPOINT/$HOSTNAME
 
 INSTALLHOME=/etc/rsyncshot
 LOGHOME=/var/log/rsyncshot.log;
 
 INCLUDES="$INSTALLHOME/include.txt";
 EXCLUDES="$INSTALLHOME/exclude.txt";
+#+end_SRC
+* Sidestep Alias Conflicts
+Copy, move, and rm commands are often aliased to require user input. 
+Using a variable allows us to sidestep this and complete the actions without any interaction. 
+#+begin_SRC sh :tangle rsyncshot :comments org
+CP="/usr/bin/cp"
+MV="/usr/bin/mv"
+RM="/usr/bin/rm"
 #+end_SRC
 * Default Cron Job Entries
 CRON_H = hourly on minute 0 from 1am to 11pm
@@ -32,24 +43,21 @@ CRON_D="0 0 * * 1-6 $SCRIPTLOC daily 6";
 CRON_W="0 0 * * 7 $SCRIPTLOC weekly 51";
 #+end_SRC
 * Functions
-** Help
+** Help Function
 #+begin_SRC sh :tangle rsyncshot :comments org
 help()
 {
-    echo ""
-    echo "rsyncshot - compact snapshots on Linux using rsync and hard links."
-    echo ""
-    echo "rsyncshot must be run as root"
-    echo ""
-    echo "Usage: "
-    echo "rsyncshot <name> <number of backups to retain>"
-    echo "          setup (installs rsyncshot and cron jobs)"
-    echo "          help  (prints this info)"
-    echo "Notes:"
-    echo "- install and log locations defined in script."
-
+    printf "\nrsyncshot - compact snapshots on Linux using rsync and hard links.\n\n"
+    printf "Usage:\nrsyncshot <name> <number of backups to retain>\n"
+    printf "          setup (installs rsyncshot and cron jobs)\n"
+    printf "          help  (prints this info)\n"
+    printf "Notes:\n"
+    printf '%s\n'  "- rsyncshot must be run as root"
+    printf '%s\n' "- install and log locations defined in script." 
+    printf '%s\n'
+}
 #+end_SRC
-** Error
+** Error Function
 #+begin_SRC sh :tangle rsyncshot :comments org
 error()
 {
@@ -58,27 +66,27 @@ error()
     exit 1;
 }
 #+end_SRC
-** Setup
+** Setup Function
 #+begin_SRC sh :tangle rsyncshot :comments org
 setup()
-{
-    # copy this file to directory on path
-    cp -f $0 /usr/local/bin
-    echo "$0 copied to /usr/local/bin"
+{    # copy this file to directory on path and make executable
+    $CP -f $0 $SCRIPTLOC
+    sudo chmod +x $SCRIPTLOC 
+    echo "$0 copied to $SCRIPTLOC and is executable"
     
     # make install home if it doesn't exist;
     if [ ! -d $INSTALLHOME ]; then
-	mkdir -p $INSTALLHOME;
-	"Created install home at $INSTALLHOME.";
+	   mkdir -p $INSTALLHOME;
+	   echo "Created install home at $INSTALLHOME.";
     fi
 
     # create includes file and add default entries
-    if [ -f $INCLUDES ]; then rm $INCLUDES; fi
+    if [ -f $INCLUDES ]; then $RM $INCLUDES; fi
     printf "/home /etc /usr/local/bin" >> $INCLUDES;
     echo "modify include file at $INCLUDES";
 
     # create excludes file and add default entries
-    if [ -f $EXCLUDES ]; then rm $EXCLUDES; fi
+    if [ -f $EXCLUDES ]; then $RM $EXCLUDES; fi
     printf "*.pyc\n*.pyo\n*.class\n*.elc\n*.o\n*.tmp\n.cache*" >>  $EXCLUDES;
     echo "modify exclude file at $EXCLUDES";
 
@@ -88,35 +96,39 @@ setup()
     echo "$CRON_D >> $LOGHOME 2>&1" >> crontemp;
     echo "$CRON_W >> $LOGHOME 2>&1">> crontemp;
     crontab crontemp;
-    rm crontemp;
+    $RM crontemp;
     echo "hourly, daily, and weekly cron jobs installed.";
 }
 #+end_SRC
 
-* Check Help Option
+* Display Help If Requested
+Make the argument uppercase for case insensitivity. 
 #+begin_SRC sh :tangle rsyncshot :comments org
+TYPE=$(tr '[a-z]' '[A-Z]' <<< $1);
 if [ "$TYPE" = "HELP" ]; then help; exit; fi
 #+end_SRC
-* Ensure Root
+* Ensure We're Running As Root
 #+begin_SRC sh :tangle rsyncshot :comments org
 if [ "$EUID" -ne 0 ]; then error "This script must be run as root."; fi
 #+end_SRC
-* Display How Script Was Started
+* Display Start Information 
 #+begin_SRC sh :tangle rsyncshot :comments org
 echo "rsyncshot invoked on `date -u` with: $0 $1 $2";
 #+end_SRC
-* Parameter Validation
+* Validate Backup Type
+First argument must be alpha characters
 #+begin_SRC sh :tangle rsyncshot :comments org
 if ! [[ $1 =~ [a-zA-Z] ]]; then error "snapshot type not recognized."; fi
-TYPE=$(tr '[a-z]' '[A-Z]' <<< $1);
 if [ "$TYPE" = "SETUP" ]; then setup; exit; fi
 #+end_SRC
 * Validate Max Snapshots
+Second argument must be numeric
 #+begin_SRC sh :tangle rsyncshot :comments org
 if ! [[ $2 =~ [0-9] ]]; then error "max snapshots not a number."; fi
 MAX=$(($2-1));
 #+end_SRC
 * Validate Include File (Source Directories) Exist
+Validates the include file exists, and checks the file contents are valid directories
 #+begin_SRC sh :tangle rsyncshot :comments org
 if [ ! -f "$INCLUDES" ]; then error "include file $INCLUDES not found."; fi
 SOURCES=$(<$INCLUDES);
@@ -129,8 +141,26 @@ done
 #+begin_SRC sh :tangle rsyncshot :comments org
 if [ ! -f "$EXCLUDES" ]; then error "Exclude file $EXCLUDES not found."; fi
 #+end_SRC
+* Validate Mountpoint 
+Fail if mountpoint doesn't exist. 
+Attempt mounting if destination filesystem not mounted; error if attempt fails. 
+#+begin_SRC sh :tangle rsyncshot :comments org
+  [ -d $MOUNTPOINT ] || error "$MOUNTPOINT doesn't exist!"
 
-* Sync Each Directory In Turn
+  if grep -qs "$MOUNTPOINT" /proc/mounts  ; then
+      true
+  else if  [ $? -eq 0 ]; then 
+           true
+       else
+           error "$MOUNTPOINT unmounted, and mount attempt failed."
+       fi
+  fi
+#+end_SRC
+* Validate Destination Directory Exists
+#+begin_SRC sh :tangle rsyncshot :comments org
+[ -d $DESTINATION ] || mkdir $DESTINATION || error "$DESTINATION doesn't exist, and attempt to create failed."
+#+end_SRC
+* Sync Each Backup Directory In Turn
 #+begin_SRC sh :tangle rsyncshot :comments org
 for SOURCE in $SOURCES
 do
@@ -140,18 +170,18 @@ do
     	  --update $SOURCE $DESTINATION/latest ;
 done
 #+end_SRC
-* Delete Max+1 Snapshot If Exists
+* If Exists, Delete Max+1 Snapshot
 #+begin_SRC sh :tangle rsyncshot :comments org
 if [ -d $DESTINATION/$TYPE.$MAX ]; then
-    rm -rf $DESTINATION/$TYPE.$MAX;
+    $RM -rf $DESTINATION/$TYPE.$MAX;
 fi
 #+end_SRC
-* Rotate Snapshots Descending
+* Rotate Remaining Snapshots Descending
 #+begin_SRC sh :tangle rsyncshot :comments org
 for (( start=$(($MAX)); start>=0; start--)); do
     end=$(($start+1));
 	if [ -d $DESTINATION/$TYPE.$start ]; then
-	    mv $DESTINATION/$TYPE.$start $DESTINATION/$TYPE.$end;
+	    $MV $DESTINATION/$TYPE.$start $DESTINATION/$TYPE.$end;
 	fi
 done
 #+end_SRC
@@ -161,7 +191,7 @@ touch $DESTINATION/latest
 #+end_SRC
 * Hard Link Only Copy to Destination
 #+begin_SRC sh :tangle rsyncshot :comments org
-cp -al $DESTINATION/latest $DESTINATION/$TYPE.0;
+$CP -al $DESTINATION/latest $DESTINATION/$TYPE.0;
 #+end_SRC
 * Make Directory Type Read-Only
 #+begin_SRC sh :tangle rsyncshot :comments org
