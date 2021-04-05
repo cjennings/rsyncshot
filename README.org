@@ -9,7 +9,7 @@ curl -LO https://git.io/JYSMS
 sudo sh ./rsyncshot setup
 #+end_SRC
 ** Automatic Hourly/Daily/Weekly Schedule via Cron
-rsyncshow will install a default schedule: 
+rsyncshot will install a default schedule: 
 - every hour at the top of the hour
 - every day at midnight
 - every week on Sunday at midnight 
