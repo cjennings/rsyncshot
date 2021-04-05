@@ -53,6 +53,6 @@ Specify what filetype patterns to exclude by editing /etc/rsyncshot/excludes.txt
 - Grep 
 - Rsync
 * Notes
-rsyncshot is a simple Bash script and an experiment in [[https://en.wikipedia.org/wiki/Literate][literate programming]] using Emacs. The script is generated from the .org file. 
+rsyncshot is a simple Bash script and an experiment in literate programming using Emacs. The script is generated from the .org file. 
 
 rsyncshot isn't production software, even though the underlying utilities are. 
