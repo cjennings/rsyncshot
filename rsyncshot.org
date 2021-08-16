@@ -33,14 +33,18 @@ CP="/usr/bin/cp"
 MV="/usr/bin/mv"
 RM="/usr/bin/rm"
 #+end_SRC
+* Prevent Overlapping Runs with Flock
+#+begin_src sh :tangle rsyncshot :comments org
+FLOCKCHECK="flock -x /tmp/rsyncshot.lock -c"
+#+end_src
 * Default Cron Job Entries
 CRON_H = hourly on minute 0 from 1am to 11pm
 CRON_D = daily at midnight, Monday - Saturday
 CRON_W = weekly at midnight on Sundays
 #+begin_SRC sh :tangle rsyncshot :comments org
-CRON_H="0 1-23 * * * $SCRIPTLOC hourly 22";
-CRON_D="0 0 * * 1-6 $SCRIPTLOC daily 6";
-CRON_W="0 0 * * 7 $SCRIPTLOC weekly 51";
+CRON_H="0 1-23 * * * $FLOCKCHECK $SCRIPTLOC hourly 22";
+CRON_D="0 0 * * 1-6 $FLOCKCHECK $SCRIPTLOC daily 6";
+CRON_W="0 0 * * 7 $FLOCKCHECK $SCRIPTLOC weekly 51";
 #+end_SRC
 * Functions
 ** Help Function
