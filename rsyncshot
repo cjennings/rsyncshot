@@ -13,7 +13,6 @@
 
 # Default Locations For Setup
 # Modify BACKUPLOCATION to point to the mount point of your backup 
-
 MOUNTPOINT=/media/backup;
 SCRIPTLOC=/usr/local/bin/rsyncshot;
 DESTINATION=$MOUNTPOINT/$HOSTNAME
@@ -24,10 +23,11 @@ LOGHOME=/var/log/rsyncshot.log;
 INCLUDES="$INSTALLHOME/include.txt";
 EXCLUDES="$INSTALLHOME/exclude.txt";
 
+FLOCKCHECK="flock -x /tmp/rsyncshot.lock -c"
+
 # Sidestep Alias Conflicts
 # Copy, move, and rm commands are often aliased to require user input. 
 # Using a variable allows us to sidestep this and complete the actions without any interaction. 
-
 CP="/usr/bin/cp"
 MV="/usr/bin/mv"
 RM="/usr/bin/rm"
@@ -36,13 +36,11 @@ RM="/usr/bin/rm"
 # CRON_H = hourly on minute 0 from 1am to 11pm
 # CRON_D = daily at midnight, Monday - Saturday
 # CRON_W = weekly at midnight on Sundays
-
-CRON_H="0 1-23 * * * $SCRIPTLOC hourly 22";
-CRON_D="0 0 * * 1-6 $SCRIPTLOC daily 6";
-CRON_W="0 0 * * 7 $SCRIPTLOC weekly 51";
+CRON_H="0 1-23 * * * $FLOCKCHECK $SCRIPTLOC hourly 22";
+CRON_D="0 0 * * 1-6 $FLOCKCHECK $SCRIPTLOC daily 6";
+CRON_W="0 0 * * 7 $FLOCKCHECK $SCRIPTLOC weekly 51";
 
 # Help Function
-
 help()
 {
     printf "\nrsyncshot - compact snapshots on Linux using rsync and hard links.\n\n"
@@ -50,13 +48,12 @@ help()
     printf "          setup (installs rsyncshot and cron jobs)\n"
     printf "          help  (prints this info)\n"
     printf "Notes:\n"
-    printf '%s\n'  "- rsyncshot must be run as root"
+    printf '%s\n' "- rsyncshot must be run as root"
     printf '%s\n' "- install and log locations defined in script." 
     printf '%s\n'
 }
 
 # Error Function
-
 error()
 {
     echo "ERROR: $0: $@" 1>&2;
@@ -65,7 +62,6 @@ error()
 }
 
 # Setup Function
-
 setup()
 {    # copy this file to directory on path and make executable
     $CP -f $0 $SCRIPTLOC
@@ -100,33 +96,27 @@ setup()
 
 # Display Help If Requested
 # Make the argument uppercase for case insensitivity. 
-
 TYPE=$(tr '[a-z]' '[A-Z]' <<< $1);
 if [ "$TYPE" = "HELP" ]; then help; exit; fi
 
 # Ensure We're Running As Root
-
 if [ "$EUID" -ne 0 ]; then error "This script must be run as root."; fi
 
 # Display Start Information 
-
 echo "rsyncshot invoked on `date -u` with: $0 $1 $2";
 
 # Validate Backup Type
 # First argument must be alpha characters
-
 if ! [[ $1 =~ [a-zA-Z] ]]; then error "snapshot type not recognized."; fi
 if [ "$TYPE" = "SETUP" ]; then setup; exit; fi
 
 # Validate Max Snapshots
 # Second argument must be numeric
-
 if ! [[ $2 =~ [0-9] ]]; then error "max snapshots not a number."; fi
 MAX=$(($2-1));
 
 # Validate Include File (Source Directories) Exist
 # Validates the include file exists, and checks the file contents are valid directories
-
 if [ ! -f "$INCLUDES" ]; then error "include file $INCLUDES not found."; fi
 SOURCES=$(<$INCLUDES);
 for SOURCE in $SOURCES
@@ -135,13 +125,11 @@ do
 done
 
 # Validate Exclude File (Exclusion Patterns) Exist
-
 if [ ! -f "$EXCLUDES" ]; then error "Exclude file $EXCLUDES not found."; fi
 
 # Validate Mountpoint 
 # Fail if mountpoint doesn't exist. 
 # Attempt mounting if destination filesystem not mounted; error if attempt fails. 
-
 [ -d $MOUNTPOINT ] || error "$MOUNTPOINT doesn't exist!"
 
 if grep -qs "$MOUNTPOINT" /proc/mounts  ; then
@@ -154,11 +142,9 @@ else if  [ $? -eq 0 ]; then
 fi
 
 # Validate Destination Directory Exists
-
 [ -d $DESTINATION ] || mkdir $DESTINATION || error "$DESTINATION doesn't exist, and attempt to create failed."
 
 # Sync Each Backup Directory In Turn
-
 for SOURCE in $SOURCES
 do
     rsync -avh -i --times \
@@ -168,13 +154,11 @@ do
 done
 
 # If Exists, Delete Max+1 Snapshot
-
 if [ -d $DESTINATION/$TYPE.$MAX ]; then
     $RM -rf $DESTINATION/$TYPE.$MAX;
 fi
 
 # Rotate Remaining Snapshots Descending
-
 for (( start=$(($MAX)); start>=0; start--)); do
     end=$(($start+1));
 	if [ -d $DESTINATION/$TYPE.$start ]; then
@@ -183,18 +167,14 @@ for (( start=$(($MAX)); start>=0; start--)); do
 done
 
 # Reset Directory Timestamp
-
 touch $DESTINATION/latest
 
 # Hard Link Only Copy to Destination
-
 $CP -al $DESTINATION/latest $DESTINATION/$TYPE.0;
 
 # Make Directory Type Read-Only
-
 chmod -w $DESTINATION/$TYPE.0
 
 # Print Time and Exit
-
 echo "rsyncshot completed `date -u` ";
 exit 0;
