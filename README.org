@@ -46,7 +46,8 @@ Specify what filetype patterns to exclude by editing /etc/rsyncshot/excludes.txt
   - .cache*
 #+end_src
 ** A Few Safeguards
-- rsyncshot separates backups by the machine's name. Use one external drive to backup multiple machines without conflicts. 
+- rsyncshot separates backups by the machine's name. Use one external drive to backup multiple machines without conflicts.
+- rsyncshot leverages lockfiles to prevent overapping runs. A rsyncshot backup will not begin if a previous run is still in progress. 
 - rsyncshot will validate the specified source directories exist before beginning the backup. 
 - rsyncshot validates it's backing up to a mounted drive. If the drive isn't mounted, rsyncshot attempts to mount it. 
 - Backup directory permissions are changed to read-only to avoid inadvertent deletion.
@@ -56,6 +57,7 @@ Specify what filetype patterns to exclude by editing /etc/rsyncshot/excludes.txt
 - Bash 
 - Grep 
 - Rsync
+- Flock
 * Notes
 rsyncshot is a simple Bash script and an experiment in literate programming using Emacs. The script is generated from the .org file. 
 
