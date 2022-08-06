@@ -3,6 +3,8 @@
 instructions should change based on install state
 - if not installed, setup instructions are clear
 - if installed, install and log location is clear
+** [#A] fixed flock issue in file, but needs change in org file
+whoops. forgot this became an exercise in literate programming
 ** [#B] backup drive should have a command line switch
 ** [#B] backup limit should be optional and have sane limits
 ** [#C] backup pruning should be more robust
