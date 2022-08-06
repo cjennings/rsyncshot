@@ -33,17 +33,12 @@ MV="/usr/bin/mv"
 RM="/usr/bin/rm"
 
 # Prevent Overlapping Runs with Flock
-
 FLOCKCHECK="flock -x /tmp/rsyncshot.lock -c"
 
 # Default Cron Job Entries
-# CRON_H = hourly on minute 0 from 1am to 11pm
-# CRON_D = daily at midnight, Monday - Saturday
-# CRON_W = weekly at midnight on Sundays
-
-CRON_H="0 1-23 * * * $FLOCKCHECK $SCRIPTLOC hourly 22";
-CRON_D="0 0 * * 1-6 $FLOCKCHECK $SCRIPTLOC daily 6";
-CRON_W="0 0 * * 7 $FLOCKCHECK $SCRIPTLOC weekly 51";
+CRON_H="0 1-23 * * * "; # hourly on minute 0 from 1am to 11pm
+CRON_D="0 0 * * 1-6 ";  # daily at midnight, Monday - Saturday
+CRON_W="0 0 * * 7 ";    # weekly at midnight on Sundays
 
 # Help Function
 
@@ -59,7 +54,6 @@ help()
     printf '%s\n'
 }
 
-# Error Function
 
 error()
 {
@@ -67,8 +61,6 @@ error()
     echo "See \"rsyncshot help\" for usage."
     exit 1;
 }
-
-# Setup Function
 
 setup()
 {    # copy this file to directory on path and make executable
@@ -94,9 +86,9 @@ setup()
 
     # write out current crontab, append default entries, and install
     crontab -l > crontemp;
-    echo "$CRON_H >> $LOGHOME 2>&1" >> crontemp;
-    echo "$CRON_D >> $LOGHOME 2>&1" >> crontemp;
-    echo "$CRON_W >> $LOGHOME 2>&1">> crontemp;
+    echo "$CRON_H $FLOCKCHECK '$SCRIPTLOC hourly 22 >> $LOGHOME 2>&1'" >> crontemp;
+    echo "$CRON_D $FLOCKCHECK '$SCRIPTLOC daily 6 >> $LOGHOME 2>&1'" >> crontemp;
+    echo "$CRON_W $FLOCKCHECK '$SCRIPTLOC weekly 51 >> $LOGHOME 2>&1'" >> crontemp;
     crontab crontemp;
     $RM crontemp;
     echo "hourly, daily, and weekly cron jobs installed.";
