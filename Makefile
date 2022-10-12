@@ -1,4 +1,4 @@
-# rsyncshot - backup with cron, rsync, and hardlinks
+# rsyncshot - backup with bash, cron, rsync, and hard links
 install:
 	sudo ./rsyncshot setup
 	@echo Installing rsyncshot complete.
