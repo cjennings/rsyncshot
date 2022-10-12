@@ -1,5 +1,5 @@
 * About rsyncshot
-Linux backups with hard links, rsync, cron, and bash. 
+Linux backups backup with bash, cron, rsync, and hard links. 
 Inspired by http://www.mikerubel.org/computers/rsync_snapshots/
 * Usage
 ** Simple Setup
@@ -8,6 +8,8 @@ rsyncshot installs itself. To setup, just run the following commands:
 wget https://raw.githubusercontent.com/cjennings/rsyncshot/main/rsyncshot
 sudo bash ./rsyncshot setup
 #+end_SRC
+
+or simply run make install from the rsyncshot directory
 ** Automatic Hourly/Daily/Weekly Schedule via Cron
 rsyncshot will install a default schedule: 
 - every hour at the top of the hour
@@ -58,6 +60,16 @@ Specify what filetype patterns to exclude by editing /etc/rsyncshot/excludes.txt
 - Grep 
 - Rsync
 - Flock
+** Uninstalling
+run 'make uninstall' from the cloned directory.
+
+or remove
+
+/etc/rsyncshot
+/usr/local/bin/rsyncshot
+/var/log/rsyncshot.log
+... and the cron entries relating to rsyncshot
+
 * Notes
 rsyncshot is a simple Bash script and an experiment in literate programming using Emacs. The script is generated from the .org file. 
 
