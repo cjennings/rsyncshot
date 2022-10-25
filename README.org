@@ -4,31 +4,31 @@ Inspired by http://www.mikerubel.org/computers/rsync_snapshots/
 * Usage
 ** Simple Setup
 rsyncshot installs itself. To setup, just run the following commands: 
-#+begin_SRC sh
-wget https://raw.githubusercontent.com/cjennings/rsyncshot/main/rsyncshot
-sudo bash ./rsyncshot setup
-#+end_SRC
-
-or simply run make install from the rsyncshot directory
+#+begin_src sh
+  wget https://raw.githubusercontent.com/cjennings/rsyncshot/main/rsyncshot
+  [...examine any downloaded script before running, no matter how safe you think it is...]
+  sudo bash ./rsyncshot setup
+#+end_src
+or simply clone this repo and run make install as root.
 ** Automatic Hourly/Daily/Weekly Schedule via Cron
 rsyncshot will install a default schedule: 
 - every hour at the top of the hour
-- every day at midnight
-- every week on Sunday at midnight 
+- every day at noon
+- every week on Sunday at noon
 
 Edit the schedule with: 
-#+begin_SRC sh
+#+begin_src sh
 sudo crontab -e 
-#+end_SRC
+#+end_src
 ** Manual Backups
 Manual backups in the terminal with two arguments: 
 - TYPE is a way to group backups together. Automatic backups will have the TYPE as HOURLY, DAILY, or WEEKLY. But you can give your manual backups any TYPE you wish. 
 - MAX is the maximum number of backups before the oldest gets removed. 
 
 For instance: 
-#+begin_SRC sh
+#+begin_src sh
 rsyncshot manual 100
-#+end_SRC
+#+end_src
 
 ** Filtering
 Specify which directories to backup by editing /etc/rsyncshot/includes.txt. The defaults are:
@@ -52,25 +52,23 @@ Specify what filetype patterns to exclude by editing /etc/rsyncshot/excludes.txt
 - rsyncshot leverages lockfiles to prevent overapping runs. A rsyncshot backup will not begin if a previous run is still in progress. 
 - rsyncshot will validate the specified source directories exist before beginning the backup. 
 - rsyncshot validates it's backing up to a mounted drive. If the drive isn't mounted, rsyncshot attempts to mount it. 
-- Backup directory permissions are changed to read-only to avoid inadvertent deletion.
+- Backup directory permissions are changed to read-only to avoid mistaken deletion.
 - rsyncshot logs the details of all runs to /var/log/rsyncshot.log. 
 ** Requirements
+- Bash
 - Cron
-- Bash 
-- Grep 
 - Rsync
+- Grep
 - Flock
 ** Uninstalling
-run 'make uninstall' from the cloned directory.
+- run 'sudo make uninstall' from the cloned directory.
+- delete relevant cron entries as root
 
-or remove
-
-/etc/rsyncshot
-/usr/local/bin/rsyncshot
-/var/log/rsyncshot.log
-... and the cron entries relating to rsyncshot
+or become root and remove
+- the /usr/local/bin/rsyncshot script
+- the /etc/rsyncshot directory
+- (optional) /var/log/rsyncshot.log
+... and the relevant cron entries with crontab -e
 
 * Notes
-rsyncshot is a simple Bash script and an experiment in literate programming using Emacs. The script is generated from the .org file. 
-
-rsyncshot isn't production software, even though the underlying utilities are. 
+rsyncshot isn't production software, even though the underlying utilities are.
