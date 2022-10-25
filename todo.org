@@ -3,10 +3,17 @@
 instructions should change based on install state
 - if not installed, setup instructions are clear
 - if installed, install and log location is clear
-** [#A] fixed flock issue in file, but needs change in org file
-whoops. forgot this became an exercise in literate programming
-** [#B] backup drive should have a command line switch
-** [#B] backup limit should be optional and have sane limits
+** [#B] backup drive should have an optional command line argument
+reason: users may want to backup to a different directory via crontab or manually
+default exists now (i.e., "/media/backup")
+** [#B] crontab should have sane limits
+monthly for a year
+weekly for a month
+daily for a week
+hourly for a day
+** [#C] all arguments should be optional
+if nothing passed arguments are "backup 100"
 ** [#C] backup pruning should be more robust
+perhaps use awk to identify files outside of range and delete via loop
 * rsyncshot closed
-** DONE [#B] backups should be contained in a subdirectory  based on hostname
+** DONE [#B] backups should be contained in a subdirectory based on hostname
