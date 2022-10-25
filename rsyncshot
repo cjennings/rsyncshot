@@ -2,46 +2,47 @@
 # rsyncshot
 # Craig Jennings craigmartinjennings@gmail.com
 # Inspired by Mike Rubel: http://www.mikerubel.org/computers/rsync_snapshots/
+# requirements: bash, rsync, flock, cron, grep
+# - unix filesystem capable of hard links at destination
+# - core unix utilities: rm, mv, cp, touch
 
-# Debugging
-
-# uncomment next 4 lines for debugging output
+# debugging: uncomment next 4 lines for debugging output
 # exec 5> >(logger -t $0)
 # BASH_XTRACEFD="5"
 # PS4='$LINENO: '
 # set -x
 
-# Default Locations For Setup
-# Modify BACKUPLOCATION to point to the mount point of your backup 
+# default locations for setup
+# modify BACKUPLOCATION to point to the mount point of your backup
 
-MOUNTPOINT=/media/backup;
+#  ──────────────────────────── Constants ────────────────────────────
+
+MOUNTDIR=/media/backup;
 SCRIPTLOC=/usr/local/bin/rsyncshot;
-DESTINATION=$MOUNTPOINT/$HOSTNAME
+DESTINATION=$MOUNTDIR/$HOSTNAME
 
 INSTALLHOME=/etc/rsyncshot
-LOGHOME=/var/log/rsyncshot.log;
+LOGFILE=/var/log/rsyncshot.log;
 
 INCLUDES="$INSTALLHOME/include.txt";
 EXCLUDES="$INSTALLHOME/exclude.txt";
 
-# Sidestep Alias Conflicts
-# Copy, move, and rm commands are often aliased to require user input. 
-# Using a variable allows us to sidestep this and complete the actions without any interaction. 
-
+# sidestep alias conflicts
+# copy, move, and rm commands can be aliased to require confirmation on certain actions.
+# using variables sidesteps the alias
 CP="/usr/bin/cp"
 MV="/usr/bin/mv"
 RM="/usr/bin/rm"
 
-# Prevent Overlapping Runs with Flock
+# prevent overlapping runs with flock
 FLOCKCHECK="flock -x /tmp/rsyncshot.lock -c"
 
-# Default Cron Job Entries
+# default cron job entries
 CRON_H="0 1-23 * * * "; # hourly on minute 0 from 1am to 11pm
-CRON_D="0 0 * * 1-6 ";  # daily at midnight, Monday - Saturday
-CRON_W="0 0 * * 7 ";    # weekly at midnight on Sundays
+CRON_D="0 12 * * 1-6 ";  # daily at noon, monday - saturday
+CRON_W="0 12 * * 7 ";    # weekly at noon on sundays
 
-# Help Function
-
+#  ──────────────────────── Utility Functions ────────────────────────
 help()
 {
     printf "\nrsyncshot - compact snapshots on Linux using rsync and hard links.\n\n"
@@ -50,28 +51,27 @@ help()
     printf "          help  (prints this info)\n"
     printf "Notes:\n"
     printf '%s\n'  "- rsyncshot must be run as root"
-    printf '%s\n' "- install and log locations defined in script." 
-    printf '%s\n'
+	printf '%s\n\n' "- install and log locations defined in script."
 }
 
 
 error()
 {
-    echo "ERROR: $0: $@" 1>&2;
+	echo "ERROR: $0:" "$@" 1>&2;
     echo "See \"rsyncshot help\" for usage."
     exit 1;
 }
 
 setup()
 {    # copy this file to directory on path and make executable
-    $CP -f $0 $SCRIPTLOC
-    sudo chmod +x $SCRIPTLOC 
-    echo "$0 copied to $SCRIPTLOC and is executable"
-    
+	$CP -f "$0" "$SCRIPTLOC"
+	sudo chmod +x "$SCRIPTLOC"
+	echo "$0 copied to $SCRIPTLOC and made executable"
+
     # make install home if it doesn't exist;
     if [ ! -d $INSTALLHOME ]; then
 	   mkdir -p $INSTALLHOME;
-	   echo "Created install home at $INSTALLHOME.";
+	   echo "Created install home at $INSTALLHOME";
     fi
 
     # create includes file and add default entries
@@ -84,45 +84,46 @@ setup()
     printf "*.pyc\n*.pyo\n*.class\n*.elc\n*.o\n*.tmp\n.cache*" >>  $EXCLUDES;
     echo "modify exclude file at $EXCLUDES";
 
-    # write out current crontab, append default entries, and install
-    crontab -l > crontemp;
-    echo "$CRON_H $FLOCKCHECK '$SCRIPTLOC hourly 22 >> $LOGHOME 2>&1'" >> crontemp;
-    echo "$CRON_D $FLOCKCHECK '$SCRIPTLOC daily 6 >> $LOGHOME 2>&1'" >> crontemp;
-    echo "$CRON_W $FLOCKCHECK '$SCRIPTLOC weekly 51 >> $LOGHOME 2>&1'" >> crontemp;
+	# write out current crontab, append default entries, and install
+	touch "$LOGFILE"
+	crontab -l > crontemp;
+	{
+		echo "$CRON_H $FLOCKCHECK '$SCRIPTLOC hourly 22 >> $LOGFILE 2>&1'"
+		echo "$CRON_D $FLOCKCHECK '$SCRIPTLOC daily 6 >> $LOGFILE 2>&1'"
+		echo "$CRON_W $FLOCKCHECK '$SCRIPTLOC weekly 51 >> $LOGFILE 2>&1'"
+	} >> crontemp
     crontab crontemp;
     $RM crontemp;
     echo "hourly, daily, and weekly cron jobs installed.";
 }
 
-# Display Help If Requested
-# Make the argument uppercase for case insensitivity. 
+#  ───────────────────────────── Script ────────────────────────────
 
+# uppercase for case-insensitivity
 TYPE=$(tr '[a-z]' '[A-Z]' <<< $1);
 if [ "$TYPE" = "HELP" ]; then help; exit; fi
 
-# Ensure We're Running As Root
-
+# ensure we're running as root
 if [ "$EUID" -ne 0 ]; then error "This script must be run as root."; fi
 
-# Display Start Information 
+# display start information
+echo "rsyncshot invoked on $(date -u) with: $0 $1 $2";
 
-echo "rsyncshot invoked on `date -u` with: $0 $1 $2";
+# if logfile was removed, recreate it.
+[ ! -f "$LOGFILE" ] || touch "$LOGFILE"
 
-# Validate Backup Type
-# First argument must be alpha characters
-
+# validate backup type
+# first argument must be alpha characters
 if ! [[ $1 =~ [a-zA-Z] ]]; then error "snapshot type not recognized."; fi
 if [ "$TYPE" = "SETUP" ]; then setup; exit; fi
 
-# Validate Max Snapshots
-# Second argument must be numeric
-
+# validate max snapshots
+# second argument must be numeric
 if ! [[ $2 =~ [0-9] ]]; then error "max snapshots not a number."; fi
 MAX=$(($2-1));
 
-# Validate Include File (Source Directories) Exist
-# Validates the include file exists, and checks the file contents are valid directories
-
+# validate include file (source directories) exist
+# validates the include file exists, and checks the file contents are valid directories
 if [ ! -f "$INCLUDES" ]; then error "include file $INCLUDES not found."; fi
 SOURCES=$(<$INCLUDES);
 for SOURCE in $SOURCES
@@ -130,67 +131,54 @@ do
     if [ ! -d "$SOURCE" ]; then error "source $SOURCE not found"; fi
 done
 
-# Validate Exclude File (Exclusion Patterns) Exist
-
+# validate exclude file (exclusion patterns) exist
 if [ ! -f "$EXCLUDES" ]; then error "Exclude file $EXCLUDES not found."; fi
 
-# Validate Mountpoint 
-# Fail if mountpoint doesn't exist. 
-# Attempt mounting if destination filesystem not mounted; error if attempt fails. 
+[ -d $MOUNTDIR ] || error "$MOUNTDIR doesn't exist."
 
-[ -d $MOUNTPOINT ] || error "$MOUNTPOINT doesn't exist!"
-
-if grep -qs "$MOUNTPOINT" /proc/mounts  ; then
-    true
-else if  [ $? -eq 0 ]; then 
-         true
-     else
-         error "$MOUNTPOINT unmounted, and mount attempt failed."
-     fi
+# if destination filesystem not mounted attempt mounting; error if attempt fails
+if ! grep -qs "$MOUNTDIR" /proc/mounts >> /dev/null 2>&1; then
+	mount "$MOUNTDIR" >> /dev/null 2>&1
+	if ! grep -qs "$MOUNTDIR" /proc/mounts >> /dev/null 2>&1; then
+		error "$MOUNTDIR not mounted and mount attempt failed."
+	fi
 fi
 
-# Validate Destination Directory Exists
+[ -d "$DESTINATION" ] || mkdir "$DESTINATION" || \
+	error "$DESTINATION doesn't exist, and attempt to create directory failed."
 
-[ -d $DESTINATION ] || mkdir $DESTINATION || error "$DESTINATION doesn't exist, and attempt to create failed."
-
-# Sync Each Backup Directory In Turn
-
+# sync each backup directory in turn
 for SOURCE in $SOURCES
 do
     rsync -avh -i --times \
     	  --delete  --delete-excluded \
-    	  --exclude-from=$EXCLUDES \
-    	  --update $SOURCE $DESTINATION/latest ;
+		  --exclude-from="$EXCLUDES" \
+		  --update "$SOURCE" "$DESTINATION"/latest ;
 done
 
-# If Exists, Delete Max+1 Snapshot
+# delete max+1 snapshot if it exists
+if [ -d "$DESTINATION"/"$TYPE"."$MAX" ]; then
+	$RM -rf "$DESTINATION"/"$TYPE"."$MAX";
 
-if [ -d $DESTINATION/$TYPE.$MAX ]; then
-    $RM -rf $DESTINATION/$TYPE.$MAX;
 fi
 
-# Rotate Remaining Snapshots Descending
-
-for (( start=$(($MAX)); start>=0; start--)); do
-    end=$(($start+1));
-	if [ -d $DESTINATION/$TYPE.$start ]; then
-	    $MV $DESTINATION/$TYPE.$start $DESTINATION/$TYPE.$end;
+# rotate remaining snapshots descending
+for (( start=$((MAX)); start>=0; start--)); do
+	end=$((start+1));
+	if [ -d "$DESTINATION"/"$TYPE".$start ]; then
+		$MV "$DESTINATION"/"$TYPE".$start "$DESTINATION"/"$TYPE".$end;
 	fi
 done
 
-# Reset Directory Timestamp
+# reset directory timestamp
+touch "$DESTINATION"/latest
 
-touch $DESTINATION/latest
+# hard link / copy to destination
+$CP -al "$DESTINATION"/latest "$DESTINATION"/"$TYPE".0;
 
-# Hard Link Only Copy to Destination
+# make directory type read-only
+chmod -w "$DESTINATION"/"$TYPE".0
 
-$CP -al $DESTINATION/latest $DESTINATION/$TYPE.0;
-
-# Make Directory Type Read-Only
-
-chmod -w $DESTINATION/$TYPE.0
-
-# Print Time and Exit
-
-echo "rsyncshot completed `date -u` ";
+# print time and exit
+echo "rsyncshot completed $(date -u) ";
 exit 0;
