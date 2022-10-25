@@ -6,7 +6,6 @@ Inspired by http://www.mikerubel.org/computers/rsync_snapshots/
 rsyncshot installs itself. To setup, just run the following commands: 
 #+begin_src sh
   wget https://raw.githubusercontent.com/cjennings/rsyncshot/main/rsyncshot
-  [...examine any downloaded script before running, no matter how safe you think it is...]
   sudo bash ./rsyncshot setup
 #+end_src
 or simply clone this repo and run make install as root.
