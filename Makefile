@@ -6,4 +6,4 @@ install:
 uninstall:
 	sudo rm -f /usr/local/bin/rsyncshot
 	sudo rm -rf /etc/rsyncshot
-	sudo rm -rf /var/log/rsyncshot.log
+
