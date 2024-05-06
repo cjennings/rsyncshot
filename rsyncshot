@@ -1,6 +1,9 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
 # rsyncshot
-# Craig Jennings craigmartinjennings@gmail.com
+# convenient backups using rsync and hard links
+
+# Craig Jennings <c@cjennings.net>
 # Inspired by Mike Rubel: http://www.mikerubel.org/computers/rsync_snapshots/
 # requirements: bash, rsync, flock, cron, grep
 # - unix filesystem capable of hard links at destination
@@ -13,9 +16,9 @@
 # set -x
 
 # default locations for setup
-# modify BACKUPLOCATION to point to the mount point of your backup
+# modify MOUNTDIR to point to the mount point of your backup
 
-#  ──────────────────────────── Constants ────────────────────────────
+#  ---------------------------- Constants ----------------------------
 
 MOUNTDIR=/media/backup;
 SCRIPTLOC=/usr/local/bin/rsyncshot;
@@ -27,9 +30,9 @@ LOGFILE=/var/log/rsyncshot.log;
 INCLUDES="$INSTALLHOME/include.txt";
 EXCLUDES="$INSTALLHOME/exclude.txt";
 
-# sidestep alias conflicts
-# copy, move, and rm commands can be aliased to require confirmation on certain actions.
-# using variables sidesteps the alias
+# copy, move, and rm commands have been aliased by the user or distro
+# creator to require confirmation on certain actions.
+# using variables allows us to sidestep any alias
 CP="/usr/bin/cp"
 MV="/usr/bin/mv"
 RM="/usr/bin/rm"
@@ -42,7 +45,8 @@ CRON_H="0 1-23 * * * "; # hourly on minute 0 from 1am to 11pm
 CRON_D="0 12 * * 1-6 ";  # daily at noon, monday - saturday
 CRON_W="0 12 * * 7 ";    # weekly at noon on sundays
 
-#  ──────────────────────── Utility Functions ────────────────────────
+#  ------------------------ Utility Functions ------------------------
+
 help()
 {
     printf "\nrsyncshot - compact snapshots on Linux using rsync and hard links.\n\n"
@@ -54,7 +58,6 @@ help()
 	printf '%s\n\n' "- install and log locations defined in script."
 }
 
-
 error()
 {
 	echo "ERROR: $0:" "$@" 1>&2;
@@ -63,7 +66,8 @@ error()
 }
 
 setup()
-{    # copy this file to directory on path and make executable
+{
+    # copy this file to directory on path and make executable
 	$CP -f "$0" "$SCRIPTLOC"
 	sudo chmod +x "$SCRIPTLOC"
 	echo "$0 copied to $SCRIPTLOC and made executable"
@@ -97,7 +101,7 @@ setup()
     echo "hourly, daily, and weekly cron jobs installed.";
 }
 
-#  ───────────────────────────── Script ────────────────────────────
+#  ----------------------------- Script ----------------------------
 
 # uppercase for case-insensitivity
 TYPE=$(tr '[a-z]' '[A-Z]' <<< $1);
