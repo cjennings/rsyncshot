@@ -1,19 +1,73 @@
 * Rsyncshot Open Work
-** [#B] help should be able to tell if installed or if setup needed
-instructions should change based on install state
+** [#B] crontab should offer more schedules
+*** 2024-05-06 Mon @ 15:51:58 -0500 problem to solve
+currently, rsyncshot has the following
+hourly each day
+daily each week
+every week
+
+...and that's it. Of course, the user can fiddle with this as they please to achieve any backup schedule they desire. However, most users won't want to mess with cron.
+
+We should do it for them. Here's what I suspect these two will be the most common:
+
+DATE BOUND
+- hourly, expiring past a specific date period (e.g., month or year)
+- daily, expiring past a specific date period  (e.g., month or year)
+- every X minutes, expiring past a specific date period  (e.g., month or year)
+
+STAGGERED
+- every 10 mins for the hour (max 5, as the last will be the hourly)
+- every hour for the day (max 23, as the last will be daily)
+- every day for the week (max 6 as, the last will be weekly)
+- every week for the year (max 51 as, the last will be yearly)
+- every year (ongoing)
+
+This means that a full year will have 86 backups.
+The user can choose to not do the 10 min or hourly backups and just allow for day, week, year.
+** [#B] backup pruning should be more robust
+*** 2024-05-06 Mon @ 16:21:29 -0500 problem to solve
+if the user uses a
+use awk to identify files outside of range and delete via loop
+** [#C] strip - and -- to ease users finding help/usage options
+*** 2024-05-06 Mon @ 15:31:50 -0500 problem to solve
+The user may not know how to even get help on the command line
+typical command line arguments are --help -h and others.
+let's make it easy for the user by stripping off the
+** [#C] help should be able to tell more about environment and act on it
+*** 2024-05-06 Mon @ 15:34:10 -0500 problem to solve
+is there a drive mounted on /media/backup (or the default location)?
+has rsyncshot been installed?
+have the cron jobs been set up?
+
+instructions should then change based on install state
 - if not installed, setup instructions are clear
 - if installed, install and log location is clear
+- if installed but no cron jobs, tell user how to set them up, offer to set up dailies, etc.
+- if no drive mounted, give user the command line option or offer to mount the drive
+
+You could tackle this in pieces: installation check, cron job check, mounted drive check, etc.
 ** [#C] backup drive should have an optional command line argument
+*** 2024-05-06 Mon @ 15:47:56 -0500 problem to solve
 reason: users may want to backup to a different directory via crontab or manually
 default exists now (i.e., "/media/backup")
-** [#B] crontab should have sane limits
-monthly for a year
-weekly for a month
-daily for a week
-hourly for a day
-** [#C] all arguments should be optional
-if nothing passed arguments are "backup 100"
-** [#C] backup pruning should be more robust
-perhaps use awk to identify files outside of range and delete via loop
+changing it means changing the source
+
+we should allow the user to pass -d (for destination) with a path
+- validate the path exists
+- assigning the destination
+** [#C] ability to trigger immediate backup
+*** 2024-05-06 Mon @ 16:21:53 -0500 problem to solve
+the user has to wait for the cron job to kick off for a backup
+however, they may want to manually trigger a backup immediately
+they can do this by: "rsyncshot <some-random-name> <some-random-number>
+
+however, we should make it easier for them.
+options:
+- no command line arguments issues the equivalent of rsyncshot BACKUP 100
+  the downside here is that the user may expect this to be a way to get usage information.
+- a command line option like: "rsyncshot --backup-now"
+  it's not obvious what to choose for the switch.
+  what have other authors chosen for an option in similar situations?
+
 * Rsyncshot Resolved
 ** DONE [#B] backups should be contained in a subdirectory based on hostname
