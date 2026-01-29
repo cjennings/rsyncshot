@@ -230,4 +230,4 @@ sudo ./tests/test_rsyncshot.sh -v
 
 * License
 
-GPL v3. See [[file:LICENSE][LICENSE]] file.
+BSD 3-Clause. See [[file:LICENSE][LICENSE]] file.
