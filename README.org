@@ -18,7 +18,9 @@ sudo bash ./rsyncshot setup
 
 # Or clone and install
 git clone https://github.com/cjennings/rsyncshot
-cd rsyncshot && sudo make install
+cd rsyncshot
+make deps          # Install dependencies (auto-detects package manager)
+sudo make install
 #+end_src
 
 After setup, edit =/etc/rsyncshot/config= to set your backup destination.
@@ -173,11 +175,27 @@ sudo rm /var/log/rsyncshot.log  # optional
 sudo crontab -e  # remove rsyncshot entries
 #+end_src
 
-* Testing
+* Development
+
+Run =make= to see all available targets:
+
+| Target        | Description                                 |
+|---------------+---------------------------------------------|
+| help          | Show all targets (default)                  |
+| install       | Install rsyncshot and configure cron        |
+| uninstall     | Remove rsyncshot and config                 |
+| deps          | Install dependencies (auto-detects distro)  |
+| lint          | Run shellcheck static analysis              |
+| check         | Run lint + full test suite                  |
+| test          | Run full test suite                         |
+| test-quick    | Run quick tests (skip backup/cron)          |
+| test-verbose  | Run tests with verbose output               |
+
+** Testing
 
 An automated test suite is included in the =tests/= directory.
 
-** Running Tests
+*** Running Tests
 
 #+begin_src sh
 # Run all tests (requires sudo)
@@ -190,7 +208,7 @@ sudo ./tests/test_rsyncshot.sh --quick
 sudo ./tests/test_rsyncshot.sh -v
 #+end_src
 
-** Test Coverage
+*** Test Coverage
 
 | Category    | Tests | Description                                          |
 |-------------+-------+------------------------------------------------------|
@@ -200,7 +218,7 @@ sudo ./tests/test_rsyncshot.sh -v
 | Backup      |     7 | Directory creation, file copying, rotation, retention, exclusions |
 | Cron        |     3 | Cron job management, no duplicates, preserves existing jobs |
 
-** Test Structure
+*** Test Structure
 
 - =tests/test_rsyncshot.sh= - Main test runner
 - =tests/lib/test_helpers.sh= - Assertion functions and test environment setup
