@@ -942,7 +942,7 @@ log "Rotating snapshots..."
 # --- Delete oldest snapshot if it exceeds retention count ---
 if run_cmd "[ -d '$BASE_PATH/$TYPE.$MAX' ]"; then
     log "Deleting oldest snapshot: $TYPE.$MAX"
-    run_cmd "rm -rf '$BASE_PATH/$TYPE.$MAX'"
+    run_cmd "$RM -rf '$BASE_PATH/$TYPE.$MAX'"
 fi
 
 # --- Rotate existing snapshots (newest to oldest to avoid overwriting) ---
@@ -950,7 +950,7 @@ for (( start=$((MAX)); start>=0; start-- )); do
     end=$((start+1))
     if run_cmd "[ -d '$BASE_PATH/$TYPE.$start' ]"; then
         log "Rotating: $TYPE.$start -> $TYPE.$end"
-        run_cmd "mv '$BASE_PATH/$TYPE.$start' '$BASE_PATH/$TYPE.$end'"
+        run_cmd "$MV '$BASE_PATH/$TYPE.$start' '$BASE_PATH/$TYPE.$end'"
     fi
 done
 
@@ -962,7 +962,7 @@ run_cmd "touch '$BASE_PATH/latest'"
 # This is instant and uses no additional disk space for unchanged files.
 # Only files that differ between snapshots consume extra space.
 log "Creating new snapshot: $TYPE.0"
-run_cmd "cp -al '$BASE_PATH/latest' '$BASE_PATH/$TYPE.0'"
+run_cmd "$CP -al '$BASE_PATH/latest' '$BASE_PATH/$TYPE.0'"
 
 # --- Make snapshot read-only to prevent accidental modification ---
 run_cmd "chmod -w '$BASE_PATH/$TYPE.0'"
