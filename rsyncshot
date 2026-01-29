@@ -1,188 +1,975 @@
 #!/usr/bin/env bash
 
-# rsyncshot
-# convenient backups using rsync and hard links
+# ==============================================================================
+# rsyncshot - Compact Snapshots Using rsync and Hard Links
+# ==============================================================================
+#
+# Creates space-efficient incremental backups using rsync and hard links.
+# Supports both local mount destinations (USB drives, NFS) and remote SSH.
+#
+# Author: Craig Jennings <c@cjennings.net>
+# Inspired by: Mike Rubel (http://www.mikerubel.org/computers/rsync_snapshots/)
+#
+# REQUIREMENTS:
+#   - bash, rsync, flock, cron, grep
+#   - Unix filesystem capable of hard links at destination
+#   - Core unix utilities: rm, mv, cp, touch
+#   - For remote mode: ssh with key-based authentication
+#     (set SSH_IDENTITY_FILE in config if key is not in root's ~/.ssh/)
+#
+# USAGE:
+#   rsyncshot <name> <count>   Run backup with snapshot name and retention count
+#   rsyncshot backup           Run immediate one-off backup (alias for 'manual 1')
+#   rsyncshot setup            Install script, create config files, add cron jobs
+#   rsyncshot status           Show installation and environment status
+#   rsyncshot list             Show existing snapshots and sizes
+#   rsyncshot dryrun <n> <c>   Preview backup without making changes
+#   rsyncshot help             Display usage information
+#
+# EXAMPLES:
+#   rsyncshot hourly 24        Keep 24 hourly snapshots (hourly.0 through hourly.23)
+#   rsyncshot daily 7          Keep 7 daily snapshots
+#   rsyncshot weekly 4         Keep 4 weekly snapshots
+#   rsyncshot manual 1         One-off backup (manual.0 only)
+#   rsyncshot dryrun hourly 24 Preview what hourly backup would do
+#   rsyncshot list             Show all snapshots with timestamps and sizes
+#
+# CONFIGURATION:
+#   Settings are stored in /etc/rsyncshot/config (created by setup).
+#   Edit this file to change backup destination, not the script itself.
+#
+# HOW IT WORKS:
+#   1. rsync copies source directories to <destination>/latest/
+#   2. Oldest snapshot beyond retention count is deleted
+#   3. Existing snapshots are rotated (name.0 -> name.1, name.1 -> name.2, etc.)
+#   4. <destination>/latest/ is hard-linked to <destination>/name.0
+#
+#   Hard links mean unchanged files share disk space across all snapshots.
+#   Only modified files consume additional space.
+#
+# ==============================================================================
 
-# Craig Jennings <c@cjennings.net>
-# Inspired by Mike Rubel: http://www.mikerubel.org/computers/rsync_snapshots/
-# requirements: bash, rsync, flock, cron, grep
-# - unix filesystem capable of hard links at destination
-# - core unix utilities: rm, mv, cp, touch
-
-# debugging: uncomment next 4 lines for debugging output
+# ------------------------------------------------------------------------------
+# DEBUG MODE
+# ------------------------------------------------------------------------------
+# Uncomment the following 4 lines to enable verbose debug output to syslog.
+# Useful for troubleshooting cron job failures.
+#
 # exec 5> >(logger -t $0)
 # BASH_XTRACEFD="5"
 # PS4='$LINENO: '
 # set -x
 
-# default locations for setup
-# modify MOUNTDIR to point to the mount point of your backup
+# ==============================================================================
+# DEFAULT CONFIGURATION
+# ==============================================================================
+# These defaults are used if /etc/rsyncshot/config doesn't exist or doesn't
+# define a value. After running 'rsyncshot setup', edit /etc/rsyncshot/config
+# to customize settings.
 
-#  ---------------------------- Constants ----------------------------
+# ------------------------------------------------------------------------------
+# BACKUP MODE SELECTION
+# ------------------------------------------------------------------------------
+# rsyncshot supports two backup modes:
+#
+# REMOTE MODE (SSH):
+#   Backups are sent over the network via SSH to a remote server.
+#   Set REMOTE_HOST to the SSH hostname or IP address.
+#   Set REMOTE_PATH to the base backup directory on the remote server.
+#   The script will create <REMOTE_PATH>/<hostname>/ for this machine's backups.
+#
+#   Example:
+#     REMOTE_HOST="truenas"
+#     REMOTE_PATH="/mnt/vault/Backups"
+#   Result: Backups go to truenas:/mnt/vault/Backups/myhostname/
+#
+# LOCAL MODE (Mount):
+#   Backups are written to a locally mounted filesystem (USB drive, NFS, etc.).
+#   Set REMOTE_HOST="" (empty) to enable local mode.
+#   Set MOUNTDIR to the mount point of your backup drive.
+#   The script will attempt to mount the filesystem if not already mounted.
+#
+#   Example:
+#     REMOTE_HOST=""
+#     MOUNTDIR="/media/backup"
+#   Result: Backups go to /media/backup/myhostname/
+#
+# ------------------------------------------------------------------------------
 
-MOUNTDIR=/media/backup;
-SCRIPTLOC=/usr/local/bin/rsyncshot;
-DESTINATION=$MOUNTDIR/$HOSTNAME
+# Remote mode settings (defaults)
+REMOTE_HOST=""
+REMOTE_PATH=""
 
-INSTALLHOME=/etc/rsyncshot
-LOGFILE=/var/log/rsyncshot.log;
+# SSH identity file (optional, for remote mode)
+# If root's SSH key is in a non-standard location (e.g., a user's home directory),
+# specify the path here. Leave empty to use SSH's default key discovery.
+# Example: SSH_IDENTITY_FILE="/home/cjennings/.ssh/id_ed25519"
+SSH_IDENTITY_FILE=""
 
-INCLUDES="$INSTALLHOME/include.txt";
-EXCLUDES="$INSTALLHOME/exclude.txt";
+# Local mode settings (defaults)
+MOUNTDIR="/media/backup"
 
-# copy, move, and rm commands have been aliased by the user or distro
-# creator to require confirmation on certain actions.
-# using variables allows us to sidestep any alias
+# ------------------------------------------------------------------------------
+# INSTALLATION PATHS
+# ------------------------------------------------------------------------------
+
+# Where to install the script for system-wide access
+# These can be overridden via environment variables for testing
+SCRIPTLOC="${SCRIPTLOC:-/usr/local/bin/rsyncshot}"
+
+# Directory for configuration files
+INSTALLHOME="${INSTALLHOME:-/etc/rsyncshot}"
+
+# Configuration file path
+CONFIGFILE="$INSTALLHOME/config"
+
+# Log file location for cron job output
+LOGFILE="${LOGFILE:-/var/log/rsyncshot.log}"
+
+# Paths to include and exclude configuration files
+INCLUDES="$INSTALLHOME/include.txt"    # Directories to back up (one per line)
+EXCLUDES="$INSTALLHOME/exclude.txt"    # Patterns to exclude (one per line)
+
+# ------------------------------------------------------------------------------
+# COMMAND ALIASES
+# ------------------------------------------------------------------------------
+# Use absolute paths to avoid issues with shell aliases that might add
+# interactive prompts (e.g., alias rm='rm -i'). Only used in local mode.
+
 CP="/usr/bin/cp"
 MV="/usr/bin/mv"
 RM="/usr/bin/rm"
 
-# prevent overlapping runs with flock
+# ------------------------------------------------------------------------------
+# CONCURRENCY CONTROL
+# ------------------------------------------------------------------------------
+# Use flock to prevent multiple instances from running simultaneously.
+# This is important when cron might trigger a new run before the previous
+# one completes (e.g., slow network, large backup).
+
 FLOCKCHECK="flock -x /tmp/rsyncshot.lock -c"
 
-# default cron job entries
-CRON_H="0 1-23 * * * "; # hourly on minute 0 from 1am to 11pm
-CRON_D="0 12 * * 1-6 ";  # daily at noon, monday - saturday
-CRON_W="0 12 * * 7 ";    # weekly at noon on sundays
+# ------------------------------------------------------------------------------
+# DEFAULT CRON SCHEDULE
+# ------------------------------------------------------------------------------
+# These schedules are installed by 'rsyncshot setup'. Modify as needed.
+#
+# Format: minute hour day-of-month month day-of-week
+#
+# Default schedule:
+#   - Hourly: Every hour from 1am to 11pm (not midnight to avoid daily/weekly)
+#   - Daily: Noon, Monday through Saturday
+#   - Weekly: Noon on Sundays
 
-#  ------------------------ Utility Functions ------------------------
+CRON_H="0 1-23 * * * "   # Hourly: minute 0, hours 1-23, every day
+CRON_D="0 12 * * 1-6 "   # Daily: noon, Monday-Saturday
+CRON_W="0 12 * * 7 "     # Weekly: noon, Sunday
+
+# ==============================================================================
+# LOAD CONFIGURATION FILE
+# ==============================================================================
+# Source the config file if it exists, overriding defaults above.
+# This allows customization without editing the script.
+
+if [ -f "$CONFIGFILE" ]; then
+    # shellcheck source=/etc/rsyncshot/config
+    source "$CONFIGFILE"
+fi
+
+# ------------------------------------------------------------------------------
+# DERIVED PATHS (auto-configured based on mode)
+# ------------------------------------------------------------------------------
+# These are calculated from the settings above. Do not modify directly.
+
+if [ -n "$REMOTE_HOST" ]; then
+    # Remote mode: backup destination is on a remote server via SSH
+    REMOTE_DEST="$REMOTE_PATH/$HOSTNAME"           # Full path on remote server
+    DESTINATION="$REMOTE_HOST:$REMOTE_DEST"        # rsync-compatible remote path
+    MODE="remote"
+else
+    # Local mode: backup destination is a locally mounted filesystem
+    DESTINATION="$MOUNTDIR/$HOSTNAME"              # Local backup path
+    MODE="local"
+fi
+
+# ==============================================================================
+# UTILITY FUNCTIONS
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# help() - Display usage information
+# ------------------------------------------------------------------------------
+# Shows command syntax, current mode, and configuration details.
 
 help()
 {
     printf "\nrsyncshot - compact snapshots on Linux using rsync and hard links.\n\n"
-    printf "Usage:\nrsyncshot <name> <number of backups to retain>\n"
-    printf "          setup (installs rsyncshot and cron jobs)\n"
-    printf "          help  (prints this info)\n"
-    printf "Notes:\n"
-    printf '%s\n'  "- rsyncshot must be run as root"
-	printf '%s\n\n' "- install and log locations defined in script."
+    printf "Usage:\n"
+    printf "  rsyncshot <name> <count>   Create snapshot with given name and retention count\n"
+    printf "  rsyncshot backup           Run immediate one-off backup\n"
+    printf "  rsyncshot setup            Install script and configure cron jobs\n"
+    printf "  rsyncshot status           Show installation and environment status\n"
+    printf "  rsyncshot list             Show existing snapshots with sizes\n"
+    printf "  rsyncshot dryrun <n> <c>   Preview backup without making changes\n"
+    printf "  rsyncshot help             Show this help message\n"
+    printf "\nExamples:\n"
+    printf "  rsyncshot hourly 24        Keep 24 hourly snapshots\n"
+    printf "  rsyncshot daily 7          Keep 7 daily snapshots\n"
+    printf "  rsyncshot backup           Immediate one-off backup\n"
+    printf "  rsyncshot dryrun manual 1  Preview a manual backup\n"
+    printf "\nConfiguration:\n"
+    printf "  Config file: %s\n" "$CONFIGFILE"
+    printf "  Includes:    %s\n" "$INCLUDES"
+    printf "  Excludes:    %s\n" "$EXCLUDES"
+    printf "\nCurrent settings:\n"
+    printf '%s\n' "- rsyncshot must be run as root"
+
+    # Display mode-specific configuration
+    if [ "$MODE" = "remote" ]; then
+        printf '%s\n'   "- Mode: remote (SSH)"
+        printf '%s\n'   "- Remote host: $REMOTE_HOST"
+        printf '%s\n\n' "- Remote path: $REMOTE_PATH/$HOSTNAME"
+    else
+        printf '%s\n'   "- Mode: local (mount)"
+        printf '%s\n\n' "- Mount dir: $MOUNTDIR/$HOSTNAME"
+    fi
 }
+
+# ------------------------------------------------------------------------------
+# error() - Display error message and exit
+# ------------------------------------------------------------------------------
+# Arguments:
+#   $@ - Error message to display
+#
+# Outputs error to stderr and exits with code 1.
 
 error()
 {
-	echo "ERROR: $0:" "$@" 1>&2;
+    echo "ERROR: $0:" "$@" 1>&2
     echo "See \"rsyncshot help\" for usage."
-    exit 1;
+    exit 1
 }
+
+# ------------------------------------------------------------------------------
+# log() - Print timestamped log message
+# ------------------------------------------------------------------------------
+# Arguments:
+#   $@ - Message to log
+#
+# Outputs message with ISO timestamp prefix.
+
+log()
+{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+# ------------------------------------------------------------------------------
+# run_cmd() - Execute a command locally or remotely based on mode
+# ------------------------------------------------------------------------------
+# Arguments:
+#   $@ - Command to execute (as a single string for remote, or arguments for local)
+#
+# In remote mode: Executes command on REMOTE_HOST via SSH
+# In local mode: Executes command locally using eval
+#
+# If SSH_IDENTITY_FILE is set, uses that key for SSH connections.
+# This abstraction allows the same rotation logic to work in both modes.
+
+run_cmd()
+{
+    if [ "$MODE" = "remote" ]; then
+        if [ -n "$SSH_IDENTITY_FILE" ]; then
+            ssh -i "$SSH_IDENTITY_FILE" "$REMOTE_HOST" "$@"
+        else
+            ssh "$REMOTE_HOST" "$@"
+        fi
+    else
+        eval "$@"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# get_base_path() - Return the base backup path for file operations
+# ------------------------------------------------------------------------------
+# Returns the path where snapshots are stored, appropriate for the current mode.
+#
+# Remote mode: Returns the path on the remote server (for use with run_cmd)
+# Local mode: Returns the local filesystem path
+#
+# This is needed because rsync uses "host:path" format, but ssh commands
+# and local operations need just the path portion.
+
+get_base_path()
+{
+    if [ "$MODE" = "remote" ]; then
+        echo "$REMOTE_DEST"
+    else
+        echo "$MOUNTDIR/$HOSTNAME"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# list_snapshots() - Display existing snapshots with timestamps and sizes
+# ------------------------------------------------------------------------------
+# Shows all snapshot directories at the backup destination, sorted by name,
+# with modification time and disk usage.
+
+list_snapshots()
+{
+    # Verify we can access the destination
+    if [ "$MODE" = "remote" ]; then
+        SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=5"
+        if [ -n "$SSH_IDENTITY_FILE" ]; then
+            SSH_OPTS="$SSH_OPTS -i $SSH_IDENTITY_FILE"
+        fi
+        if ! ssh $SSH_OPTS "$REMOTE_HOST" "true" 2>/dev/null; then
+            error "Cannot connect to $REMOTE_HOST via SSH."
+        fi
+    else
+        if [ ! -d "$MOUNTDIR" ]; then
+            error "$MOUNTDIR doesn't exist."
+        fi
+        if ! grep -qs "$MOUNTDIR" /proc/mounts 2>/dev/null; then
+            error "$MOUNTDIR is not mounted."
+        fi
+    fi
+
+    BASE_PATH=$(get_base_path)
+
+    echo ""
+    echo "Snapshots at: $DESTINATION"
+    echo "============================================================"
+
+    # Build command to list snapshots with details
+    # Format: name, modification time, size
+    LIST_CMD="
+        if [ -d '$BASE_PATH' ]; then
+            cd '$BASE_PATH'
+            found=0
+            for dir in */ ; do
+                if [ -d \"\$dir\" ] && [ \"\$dir\" != '*/' ]; then
+                    found=1
+                    name=\$(basename \"\$dir\")
+                    mtime=\$(stat -c '%y' \"\$dir\" 2>/dev/null | cut -d'.' -f1)
+                    size=\$(du -sh \"\$dir\" 2>/dev/null | cut -f1)
+                    printf '%-20s %s  %s\n' \"\$name\" \"\$mtime\" \"\$size\"
+                fi
+            done | sort
+            if [ \"\$found\" -eq 0 ]; then
+                echo 'No snapshots found.'
+            fi
+        else
+            echo 'No snapshots found.'
+        fi
+    "
+
+    run_cmd "$LIST_CMD"
+    echo ""
+}
+
+# ------------------------------------------------------------------------------
+# show_status() - Display installation and environment status
+# ------------------------------------------------------------------------------
+# Shows comprehensive status of rsyncshot installation, configuration,
+# destination accessibility, and cron job status.
+
+show_status()
+{
+    echo ""
+    echo "rsyncshot status"
+    echo "============================================================"
+
+    # --- Installation status ---
+    echo ""
+    echo "Installation:"
+    if [ -x "$SCRIPTLOC" ]; then
+        echo "  ✓ Script installed at $SCRIPTLOC"
+    else
+        echo "  ✗ Script NOT installed (run 'rsyncshot setup')"
+    fi
+
+    # --- Configuration files ---
+    echo ""
+    echo "Configuration:"
+    if [ -f "$CONFIGFILE" ]; then
+        echo "  ✓ Config file: $CONFIGFILE"
+    else
+        echo "  ✗ Config file NOT found: $CONFIGFILE"
+    fi
+
+    if [ -f "$INCLUDES" ]; then
+        # Count non-empty, non-comment lines
+        INCLUDE_COUNT=$(grep -cv '^[[:space:]]*#\|^[[:space:]]*$' "$INCLUDES" 2>/dev/null || echo 0)
+        echo "  ✓ Include file: $INCLUDES ($INCLUDE_COUNT directories)"
+    else
+        echo "  ✗ Include file NOT found: $INCLUDES"
+    fi
+
+    if [ -f "$EXCLUDES" ]; then
+        EXCLUDE_COUNT=$(grep -cv '^#\|^$' "$EXCLUDES" 2>/dev/null || echo 0)
+        echo "  ✓ Exclude file: $EXCLUDES ($EXCLUDE_COUNT patterns)"
+    else
+        echo "  ✗ Exclude file NOT found: $EXCLUDES"
+    fi
+
+    # --- Backup mode and destination ---
+    echo ""
+    echo "Backup Destination:"
+    echo "  Mode: $MODE"
+
+    if [ "$MODE" = "remote" ]; then
+        echo "  Remote host: $REMOTE_HOST"
+        echo "  Remote path: $REMOTE_PATH/$HOSTNAME"
+
+        if [ -n "$SSH_IDENTITY_FILE" ]; then
+            if [ -f "$SSH_IDENTITY_FILE" ]; then
+                echo "  ✓ SSH key: $SSH_IDENTITY_FILE"
+            else
+                echo "  ✗ SSH key NOT found: $SSH_IDENTITY_FILE"
+            fi
+        else
+            echo "  SSH key: (using default)"
+        fi
+
+        # Test SSH connectivity
+        SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=5"
+        if [ -n "$SSH_IDENTITY_FILE" ]; then
+            SSH_OPTS="$SSH_OPTS -i $SSH_IDENTITY_FILE"
+        fi
+        if ssh $SSH_OPTS "$REMOTE_HOST" "true" 2>/dev/null; then
+            echo "  ✓ SSH connection: OK"
+
+            # Check if backup directory exists
+            if run_cmd "[ -d '$REMOTE_DEST' ]" 2>/dev/null; then
+                echo "  ✓ Backup directory exists"
+            else
+                echo "  ✗ Backup directory NOT found (will be created on first backup)"
+            fi
+        else
+            echo "  ✗ SSH connection: FAILED"
+        fi
+    else
+        echo "  Mount point: $MOUNTDIR"
+
+        if [ -d "$MOUNTDIR" ]; then
+            echo "  ✓ Mount point exists"
+
+            if grep -qs "$MOUNTDIR" /proc/mounts 2>/dev/null; then
+                echo "  ✓ Filesystem mounted"
+
+                if [ -d "$MOUNTDIR/$HOSTNAME" ]; then
+                    echo "  ✓ Backup directory exists"
+                else
+                    echo "  ✗ Backup directory NOT found (will be created on first backup)"
+                fi
+            else
+                echo "  ✗ Filesystem NOT mounted"
+            fi
+        else
+            echo "  ✗ Mount point does NOT exist"
+        fi
+    fi
+
+    # --- Cron jobs ---
+    echo ""
+    echo "Scheduled Backups:"
+    CRON_JOBS=$(crontab -l 2>/dev/null | grep -c "rsyncshot" || echo 0)
+    if [ "$CRON_JOBS" -gt 0 ]; then
+        echo "  ✓ $CRON_JOBS cron job(s) installed:"
+        crontab -l 2>/dev/null | grep "rsyncshot" | while read -r line; do
+            # Extract the backup type from the cron line
+            if echo "$line" | grep -q "hourly"; then
+                SCHED=$(echo "$line" | awk '{print $1, $2, $3, $4, $5}')
+                echo "    - hourly: $SCHED"
+            elif echo "$line" | grep -q "daily"; then
+                SCHED=$(echo "$line" | awk '{print $1, $2, $3, $4, $5}')
+                echo "    - daily:  $SCHED"
+            elif echo "$line" | grep -q "weekly"; then
+                SCHED=$(echo "$line" | awk '{print $1, $2, $3, $4, $5}')
+                echo "    - weekly: $SCHED"
+            fi
+        done
+    else
+        echo "  ✗ No cron jobs installed (run 'rsyncshot setup')"
+    fi
+
+    # --- Log file ---
+    echo ""
+    echo "Logging:"
+    if [ -f "$LOGFILE" ]; then
+        LOG_SIZE=$(du -h "$LOGFILE" 2>/dev/null | cut -f1)
+        LOG_LINES=$(wc -l < "$LOGFILE" 2>/dev/null)
+        echo "  ✓ Log file: $LOGFILE ($LOG_SIZE, $LOG_LINES lines)"
+
+        # Show last backup time from log
+        LAST_BACKUP=$(grep "completed successfully" "$LOGFILE" 2>/dev/null | tail -1)
+        if [ -n "$LAST_BACKUP" ]; then
+            # Extract timestamp from [YYYY-MM-DD HH:MM:SS] format (portable, no Perl regex)
+            LAST_TIME=$(echo "$LAST_BACKUP" | sed 's/.*\[\([^]]*\)\].*/\1/')
+            echo "  Last successful backup: $LAST_TIME"
+        fi
+    else
+        echo "  ✗ Log file NOT found: $LOGFILE"
+    fi
+
+    # --- Snapshots summary ---
+    echo ""
+    echo "Snapshots:"
+    if [ "$MODE" = "remote" ]; then
+        if ssh $SSH_OPTS "$REMOTE_HOST" "true" 2>/dev/null; then
+            SNAP_COUNT=$(run_cmd "ls -d '$REMOTE_DEST'/*/ 2>/dev/null | wc -l" 2>/dev/null || echo 0)
+            if [ "$SNAP_COUNT" -gt 0 ]; then
+                echo "  $SNAP_COUNT snapshot(s) found (run 'rsyncshot list' for details)"
+            else
+                echo "  No snapshots found"
+            fi
+        else
+            echo "  (cannot check - SSH connection failed)"
+        fi
+    else
+        if [ -d "$MOUNTDIR/$HOSTNAME" ]; then
+            SNAP_COUNT=$(ls -d "$MOUNTDIR/$HOSTNAME"/*/ 2>/dev/null | wc -l || echo 0)
+            if [ "$SNAP_COUNT" -gt 0 ]; then
+                echo "  $SNAP_COUNT snapshot(s) found (run 'rsyncshot list' for details)"
+            else
+                echo "  No snapshots found"
+            fi
+        else
+            echo "  (backup directory does not exist)"
+        fi
+    fi
+
+    echo ""
+}
+
+# ------------------------------------------------------------------------------
+# setup() - Install rsyncshot and configure the system
+# ------------------------------------------------------------------------------
+# Performs initial setup:
+#   1. Verifies connectivity (SSH for remote, mount point for local)
+#   2. Copies script to /usr/local/bin/rsyncshot
+#   3. Creates /etc/rsyncshot/ directory
+#   4. Creates config file with current settings
+#   5. Creates default include.txt (directories to back up)
+#   6. Creates default exclude.txt (patterns to skip)
+#   7. Creates backup destination directory
+#   8. Installs cron jobs for automated backups
+#
+# After setup, edit /etc/rsyncshot/config, include.txt, and exclude.txt as needed.
 
 setup()
 {
-    # copy this file to directory on path and make executable
-	$CP -f "$0" "$SCRIPTLOC"
-	sudo chmod +x "$SCRIPTLOC"
-	echo "$0 copied to $SCRIPTLOC and made executable"
-
-    # make install home if it doesn't exist;
-    if [ ! -d $INSTALLHOME ]; then
-	   mkdir -p $INSTALLHOME;
-	   echo "Created install home at $INSTALLHOME";
+    # --- Verify destination is accessible ---
+    if [ "$MODE" = "remote" ]; then
+        # Remote mode: test SSH connectivity with key-based auth
+        echo "Testing SSH connection to $REMOTE_HOST..."
+        SSH_TEST_OPTS="-o BatchMode=yes -o ConnectTimeout=5"
+        if [ -n "$SSH_IDENTITY_FILE" ]; then
+            SSH_TEST_OPTS="$SSH_TEST_OPTS -i $SSH_IDENTITY_FILE"
+        fi
+        if ! ssh $SSH_TEST_OPTS "$REMOTE_HOST" "echo 'SSH connection successful'" 2>/dev/null; then
+            error "Cannot connect to $REMOTE_HOST via SSH. Ensure SSH key auth is configured."
+        fi
+    else
+        # Local mode: verify mount directory exists
+        if [ ! -d "$MOUNTDIR" ]; then
+            error "$MOUNTDIR doesn't exist. Create it or update MOUNTDIR in script."
+        fi
     fi
 
-    # create includes file and add default entries
-    if [ -f $INCLUDES ]; then $RM $INCLUDES; fi
-    printf "/home /etc /usr/local/bin" >> $INCLUDES;
-    echo "modify include file at $INCLUDES";
+    # --- Install script to system path ---
+    $CP -f "$0" "$SCRIPTLOC"
+    chmod +x "$SCRIPTLOC"
+    echo "$0 copied to $SCRIPTLOC and made executable"
 
-    # create excludes file and add default entries
-    if [ -f $EXCLUDES ]; then $RM $EXCLUDES; fi
-    printf "*.pyc\n*.pyo\n*.class\n*.elc\n*.o\n*.tmp\n.cache*" >>  $EXCLUDES;
-    echo "modify exclude file at $EXCLUDES";
+    # --- Create configuration directory ---
+    if [ ! -d "$INSTALLHOME" ]; then
+        mkdir -p "$INSTALLHOME"
+        echo "Created install home at $INSTALLHOME"
+    fi
 
-	# write out current crontab, append default entries, and install
-	touch "$LOGFILE"
-	crontab -l > crontemp;
-	{
-		echo "$CRON_H $FLOCKCHECK '$SCRIPTLOC hourly 22 >> $LOGFILE 2>&1'"
-		echo "$CRON_D $FLOCKCHECK '$SCRIPTLOC daily 6 >> $LOGFILE 2>&1'"
-		echo "$CRON_W $FLOCKCHECK '$SCRIPTLOC weekly 51 >> $LOGFILE 2>&1'"
-	} >> crontemp
-    crontab crontemp;
-    $RM crontemp;
-    echo "hourly, daily, and weekly cron jobs installed.";
+    # --- Create config file ---
+    # Contains the key settings that users will want to customize
+    cat > "$CONFIGFILE" << EOF
+# ==============================================================================
+# rsyncshot configuration
+# ==============================================================================
+# Edit this file to customize backup settings.
+# Changes take effect on next rsyncshot run.
+
+# ------------------------------------------------------------------------------
+# BACKUP MODE
+# ------------------------------------------------------------------------------
+# Set REMOTE_HOST for SSH mode, or leave empty for local mount mode.
+
+# Remote mode (SSH to a server):
+REMOTE_HOST="$REMOTE_HOST"
+REMOTE_PATH="$REMOTE_PATH"
+
+# SSH identity file (optional, for remote mode)
+# If running as root but your SSH key is in your user's home directory,
+# specify the full path here. Leave empty to use SSH's default key discovery.
+# Example: SSH_IDENTITY_FILE="/home/username/.ssh/id_ed25519"
+SSH_IDENTITY_FILE="$SSH_IDENTITY_FILE"
+
+# Local mode (USB drive, NFS mount, etc.):
+# REMOTE_HOST=""
+MOUNTDIR="$MOUNTDIR"
+EOF
+    echo "Created config file at $CONFIGFILE"
+
+    # --- Create include file (directories to back up) ---
+    # Default: /home (user data), /etc (system config), /usr/local/bin (custom scripts)
+    # Format: one directory per line (supports paths with spaces)
+    if [ -f "$INCLUDES" ]; then $RM "$INCLUDES"; fi
+    cat >> "$INCLUDES" << 'EOF'
+/home
+/etc
+/usr/local/bin
+EOF
+    echo "Modify include file at $INCLUDES"
+
+    # --- Create exclude file (patterns to skip) ---
+    # Default excludes: caches, temp files, compiled code, editor backups
+    # Format: one pattern per line (rsync --exclude-from format)
+    if [ -f "$EXCLUDES" ]; then $RM "$EXCLUDES"; fi
+    cat >> "$EXCLUDES" << 'EOF'
+# Compiled/bytecode files
+*.pyc
+*.pyo
+*.class
+*.elc
+*.o
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# Cache directories
+.cache
+.cache*
+*/.cache/*
+
+# Trash and browser caches
+.local/share/Trash
+.mozilla/firefox/*/cache2
+.thunderbird/*/ImapMail
+
+# Package manager caches and build artifacts
+node_modules
+__pycache__
+
+# Log files (usually regenerated)
+*.log
+EOF
+    echo "Modify exclude file at $EXCLUDES"
+
+    # --- Create backup destination directory ---
+    BASE_PATH=$(get_base_path)
+    echo "Creating backup directory..."
+    run_cmd "mkdir -p '$BASE_PATH'"
+
+    # --- Install cron jobs ---
+    # Remove any existing rsyncshot entries, then add fresh ones
+    # This prevents duplicate entries if setup is run multiple times
+    touch "$LOGFILE"
+    CRONTEMP=$(mktemp)
+    crontab -l 2>/dev/null | grep -v "rsyncshot" > "$CRONTEMP" || true
+    {
+        echo "# rsyncshot automated backups"
+        echo "$CRON_H $FLOCKCHECK '$SCRIPTLOC hourly 22 >> $LOGFILE 2>&1'"
+        echo "$CRON_D $FLOCKCHECK '$SCRIPTLOC daily 6 >> $LOGFILE 2>&1'"
+        echo "$CRON_W $FLOCKCHECK '$SCRIPTLOC weekly 51 >> $LOGFILE 2>&1'"
+    } >> "$CRONTEMP"
+    crontab "$CRONTEMP"
+    $RM "$CRONTEMP"
+    echo "Hourly, daily, and weekly cron jobs installed."
+
+    # --- Display summary ---
+    echo ""
+    echo "Setup complete. Configuration:"
+    echo "  Mode:           $MODE"
+    if [ "$MODE" = "remote" ]; then
+        echo "  Remote host:    $REMOTE_HOST"
+        echo "  Remote path:    $REMOTE_DEST"
+    else
+        echo "  Mount dir:      $MOUNTDIR"
+        echo "  Destination:    $DESTINATION"
+    fi
+    echo "  Config file:    $CONFIGFILE"
+    echo "  Includes:       $INCLUDES"
+    echo "  Excludes:       $EXCLUDES"
+    echo "  Log file:       $LOGFILE"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Edit $CONFIGFILE to set backup destination"
+    echo "  2. Edit $INCLUDES to specify directories to back up"
+    echo "  3. Edit $EXCLUDES to add any additional exclusion patterns"
+    echo "  4. Run 'sudo rsyncshot dryrun manual 1' to preview"
+    echo "  5. Run 'sudo rsyncshot manual 1' to test"
 }
 
-#  ----------------------------- Script ----------------------------
+# ==============================================================================
+# MAIN SCRIPT
+# ==============================================================================
 
-# uppercase for case-insensitivity
-TYPE=$(tr '[a-z]' '[A-Z]' <<< $1);
+# --- Handle help command (before root check, so anyone can view help) ---
+TYPE=$(tr '[:lower:]' '[:upper:]' <<< "$1")
 if [ "$TYPE" = "HELP" ]; then help; exit; fi
 
-# ensure we're running as root
+# --- Verify running as root ---
+# Root is required for:
+#   - Reading all files in /home and /etc
+#   - Writing to /var/log and /usr/local/bin
+#   - Installing cron jobs
 if [ "$EUID" -ne 0 ]; then error "This script must be run as root."; fi
 
-# display start information
-echo "rsyncshot invoked on $(date -u) with: $0 $1 $2";
+# --- Verify required commands exist ---
+if ! command -v rsync &> /dev/null; then
+    echo "ERROR: rsync is not installed." 1>&2
+    echo ""
+    echo "Install rsync using your package manager:"
+    echo "  Arch Linux:    sudo pacman -S rsync"
+    echo "  Debian/Ubuntu: sudo apt install rsync"
+    echo "  Fedora/RHEL:   sudo dnf install rsync"
+    echo "  macOS:         brew install rsync"
+    exit 1
+fi
 
-# if logfile was removed, recreate it.
-[ ! -f "$LOGFILE" ] || touch "$LOGFILE"
+if ! command -v flock &> /dev/null; then
+    echo "ERROR: flock is not installed (required for cron job locking)." 1>&2
+    echo ""
+    echo "Install flock using your package manager:"
+    echo "  Arch Linux:    sudo pacman -S util-linux"
+    echo "  Debian/Ubuntu: sudo apt install util-linux"
+    echo "  Fedora/RHEL:   sudo dnf install util-linux"
+    echo "  macOS:         brew install flock"
+    exit 1
+fi
 
-# validate backup type
-# first argument must be alpha characters
-if ! [[ $1 =~ [a-zA-Z] ]]; then error "snapshot type not recognized."; fi
+if [ "$MODE" = "remote" ] && ! command -v ssh &> /dev/null; then
+    echo "ERROR: ssh is not installed (required for remote mode)." 1>&2
+    echo ""
+    echo "Install openssh using your package manager:"
+    echo "  Arch Linux:    sudo pacman -S openssh"
+    echo "  Debian/Ubuntu: sudo apt install openssh-client"
+    echo "  Fedora/RHEL:   sudo dnf install openssh-clients"
+    exit 1
+fi
+
+# --- Handle list command ---
+if [ "$TYPE" = "LIST" ]; then list_snapshots; exit; fi
+
+# --- Handle status command ---
+if [ "$TYPE" = "STATUS" ]; then show_status; exit; fi
+
+# --- Handle backup command (immediate one-off backup) ---
+# 'rsyncshot backup' is a convenient alias for 'rsyncshot manual 1'
+if [ "$TYPE" = "BACKUP" ]; then
+    set -- "manual" "1"  # Replace arguments
+    TYPE="MANUAL"
+fi
+
+# --- Handle dryrun command ---
+# Dryrun mode: show what would be backed up without making changes
+DRYRUN=false
+if [ "$TYPE" = "DRYRUN" ]; then
+    DRYRUN=true
+    shift  # Remove 'dryrun' from arguments, process remaining as normal
+    TYPE=$(tr '[:lower:]' '[:upper:]' <<< "$1")
+fi
+
+# --- Log invocation ---
+if [ "$DRYRUN" = true ]; then
+    log "rsyncshot DRYRUN invoked with: $0 $1 $2 (mode: $MODE)"
+else
+    log "rsyncshot invoked with: $0 $1 $2 (mode: $MODE)"
+fi
+
+# --- Ensure log file exists ---
+[ -f "$LOGFILE" ] || touch "$LOGFILE"
+
+# --- Validate first argument (snapshot type) ---
+# Must be alphabetic only (e.g., "hourly", "daily", "weekly", "manual")
+if ! [[ $1 =~ ^[a-zA-Z]+$ ]]; then error "snapshot type must be alphabetic (e.g., hourly, daily, manual)."; fi
+
+# --- Handle setup command ---
 if [ "$TYPE" = "SETUP" ]; then setup; exit; fi
 
-# validate max snapshots
-# second argument must be numeric
-if ! [[ $2 =~ [0-9] ]]; then error "max snapshots not a number."; fi
-MAX=$(($2-1));
+# --- Validate second argument (retention count) ---
+# Must be numeric only (e.g., 24 for 24 hourly snapshots)
+if ! [[ $2 =~ ^[0-9]+$ ]]; then error "max snapshots must be a number (e.g., 24)."; fi
+MAX=$(($2-1))  # Convert count to max index (e.g., 24 -> 23 for indices 0-23)
 
-# validate include file (source directories) exist
-# validates the include file exists, and checks the file contents are valid directories
+# --- Validate include file exists and contains valid directories ---
 if [ ! -f "$INCLUDES" ]; then error "include file $INCLUDES not found."; fi
-SOURCES=$(<$INCLUDES);
-for SOURCE in $SOURCES
-do
-    if [ ! -d "$SOURCE" ]; then error "source $SOURCE not found"; fi
-done
 
-# validate exclude file (exclusion patterns) exist
+# Read include file line by line (supports paths with spaces)
+while IFS= read -r SOURCE || [ -n "$SOURCE" ]; do
+    # Skip empty lines and comments
+    [[ -z "$SOURCE" || "$SOURCE" =~ ^[[:space:]]*# ]] && continue
+    if [ ! -d "$SOURCE" ]; then error "source $SOURCE not found"; fi
+done < "$INCLUDES"
+
+# --- Validate exclude file exists ---
 if [ ! -f "$EXCLUDES" ]; then error "Exclude file $EXCLUDES not found."; fi
 
-[ -d $MOUNTDIR ] || error "$MOUNTDIR doesn't exist."
+# --- Mode-specific destination validation ---
+if [ "$MODE" = "remote" ]; then
+    # Verify SSH identity file exists if specified
+    if [ -n "$SSH_IDENTITY_FILE" ] && [ ! -f "$SSH_IDENTITY_FILE" ]; then
+        error "SSH identity file not found: $SSH_IDENTITY_FILE"
+    fi
 
-# if destination filesystem not mounted attempt mounting; error if attempt fails
-if ! grep -qs "$MOUNTDIR" /proc/mounts >> /dev/null 2>&1; then
-	mount "$MOUNTDIR" >> /dev/null 2>&1
-	if ! grep -qs "$MOUNTDIR" /proc/mounts >> /dev/null 2>&1; then
-		error "$MOUNTDIR not mounted and mount attempt failed."
-	fi
+    # Remote mode: verify SSH connectivity
+    # Uses BatchMode to fail immediately if key auth doesn't work
+    # Uses ConnectTimeout to fail quickly if host is unreachable
+    SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=10"
+    if [ -n "$SSH_IDENTITY_FILE" ]; then
+        SSH_OPTS="$SSH_OPTS -i $SSH_IDENTITY_FILE"
+    fi
+    if ! ssh $SSH_OPTS "$REMOTE_HOST" "true" 2>/dev/null; then
+        error "Cannot connect to $REMOTE_HOST via SSH."
+    fi
+else
+    # Local mode: verify mount point exists
+    [ -d "$MOUNTDIR" ] || error "$MOUNTDIR doesn't exist."
+
+    # Attempt to mount if not already mounted
+    # This supports fstab entries with 'noauto' option
+    # RSYNCSHOT_SKIP_MOUNT_CHECK can be set for testing purposes
+    if [ "${RSYNCSHOT_SKIP_MOUNT_CHECK:-}" != "1" ]; then
+        if ! grep -qs "$MOUNTDIR" /proc/mounts >> /dev/null 2>&1; then
+            mount "$MOUNTDIR" >> /dev/null 2>&1
+            if ! grep -qs "$MOUNTDIR" /proc/mounts >> /dev/null 2>&1; then
+                error "$MOUNTDIR not mounted and mount attempt failed."
+            fi
+        fi
+    fi
 fi
 
-[ -d "$DESTINATION" ] || mkdir "$DESTINATION" || \
-	error "$DESTINATION doesn't exist, and attempt to create directory failed."
+# --- Get base path for file operations ---
+BASE_PATH=$(get_base_path)
 
-# sync each backup directory in turn
-for SOURCE in $SOURCES
-do
-    rsync -avh -i --times \
-    	  --delete  --delete-excluded \
-		  --exclude-from="$EXCLUDES" \
-		  --update "$SOURCE" "$DESTINATION"/latest ;
-done
-
-# delete max+1 snapshot if it exists
-if [ -d "$DESTINATION"/"$TYPE"."$MAX" ]; then
-	$RM -rf "$DESTINATION"/"$TYPE"."$MAX";
-
+# --- Ensure destination directory structure exists ---
+if [ "$DRYRUN" = false ]; then
+    run_cmd "mkdir -p '$BASE_PATH/latest'"
 fi
 
-# rotate remaining snapshots descending
-for (( start=$((MAX)); start>=0; start--)); do
-	end=$((start+1));
-	if [ -d "$DESTINATION"/"$TYPE".$start ]; then
-		$MV "$DESTINATION"/"$TYPE".$start "$DESTINATION"/"$TYPE".$end;
-	fi
+# ==============================================================================
+# BACKUP PHASE: Sync source directories to destination
+# ==============================================================================
+# rsync options:
+#   -a          Archive mode (preserves permissions, timestamps, symlinks, etc.)
+#   -v          Verbose output
+#   -h          Human-readable sizes
+#   --times     Preserve modification times
+#   --delete    Delete files in destination that don't exist in source
+#   --delete-excluded  Also delete excluded files from destination
+#   --exclude-from     Read exclusion patterns from file
+#   --dry-run   Show what would be transferred without making changes
+
+# Track if any rsync operation fails
+RSYNC_FAILED=false
+
+# Set RSYNC_RSH environment variable if using custom SSH identity
+# rsync automatically uses this variable for the remote shell command
+if [ "$MODE" = "remote" ] && [ -n "$SSH_IDENTITY_FILE" ]; then
+    export RSYNC_RSH="ssh -i $SSH_IDENTITY_FILE"
+fi
+
+# Read include file and sync each directory
+while IFS= read -r SOURCE || [ -n "$SOURCE" ]; do
+    # Skip empty lines and comments
+    [[ -z "$SOURCE" || "$SOURCE" =~ ^[[:space:]]*# ]] && continue
+
+    log "Syncing $SOURCE to $DESTINATION/latest"
+
+    if [ "$DRYRUN" = true ]; then
+        # Dry run: show what would be transferred
+        rsync -avh --times \
+              --delete --delete-excluded \
+              --exclude-from="$EXCLUDES" \
+              --dry-run \
+              "$SOURCE" "$DESTINATION"/latest
+        RSYNC_EXIT=$?
+    else
+        # Actual backup
+        rsync -avh --times \
+              --delete --delete-excluded \
+              --exclude-from="$EXCLUDES" \
+              "$SOURCE" "$DESTINATION"/latest
+        RSYNC_EXIT=$?
+    fi
+
+    # Check rsync exit code
+    if [ $RSYNC_EXIT -ne 0 ]; then
+        echo "ERROR: rsync failed for $SOURCE (exit code: $RSYNC_EXIT)" 1>&2
+        RSYNC_FAILED=true
+    fi
+done < "$INCLUDES"
+
+# --- Abort if rsync failed ---
+# Don't rotate snapshots if the backup didn't complete successfully
+if [ "$RSYNC_FAILED" = true ]; then
+    error "Backup failed. Snapshot rotation skipped to preserve existing backups."
+fi
+
+# --- Exit here if dry run ---
+if [ "$DRYRUN" = true ]; then
+    log "Dry run complete. No changes were made."
+    echo ""
+    echo "To perform actual backup, run without 'dryrun':"
+    echo "  sudo rsyncshot $1 $2"
+    exit 0
+fi
+
+# ==============================================================================
+# ROTATION PHASE: Manage snapshot history
+# ==============================================================================
+# Snapshot naming: TYPE.N where N is the age (0 = newest, MAX = oldest)
+#
+# Example with "hourly 4" (keep 4 snapshots, indices 0-3, MAX=3):
+#   Before: hourly.0, hourly.1, hourly.2, hourly.3
+#   Step 1: Delete hourly.3 (oldest, beyond retention)
+#   Step 2: Rotate: hourly.2 -> hourly.3, hourly.1 -> hourly.2, hourly.0 -> hourly.1
+#   Step 3: Hard-link latest/ to hourly.0 (newest snapshot)
+#   After: hourly.0 (new), hourly.1, hourly.2, hourly.3
+
+log "Rotating snapshots..."
+
+# --- Delete oldest snapshot if it exceeds retention count ---
+if run_cmd "[ -d '$BASE_PATH/$TYPE.$MAX' ]"; then
+    log "Deleting oldest snapshot: $TYPE.$MAX"
+    run_cmd "rm -rf '$BASE_PATH/$TYPE.$MAX'"
+fi
+
+# --- Rotate existing snapshots (newest to oldest to avoid overwriting) ---
+for (( start=$((MAX)); start>=0; start-- )); do
+    end=$((start+1))
+    if run_cmd "[ -d '$BASE_PATH/$TYPE.$start' ]"; then
+        log "Rotating: $TYPE.$start -> $TYPE.$end"
+        run_cmd "mv '$BASE_PATH/$TYPE.$start' '$BASE_PATH/$TYPE.$end'"
+    fi
 done
 
-# reset directory timestamp
-touch "$DESTINATION"/latest
+# --- Update timestamp on latest/ directory ---
+run_cmd "touch '$BASE_PATH/latest'"
 
-# hard link / copy to destination
-$CP -al "$DESTINATION"/latest "$DESTINATION"/"$TYPE".0;
+# --- Create new snapshot using hard links ---
+# cp -al creates a copy where all files are hard links to the originals.
+# This is instant and uses no additional disk space for unchanged files.
+# Only files that differ between snapshots consume extra space.
+log "Creating new snapshot: $TYPE.0"
+run_cmd "cp -al '$BASE_PATH/latest' '$BASE_PATH/$TYPE.0'"
 
-# make directory type read-only
-chmod -w "$DESTINATION"/"$TYPE".0
+# --- Make snapshot read-only to prevent accidental modification ---
+run_cmd "chmod -w '$BASE_PATH/$TYPE.0'"
 
-# print time and exit
-echo "rsyncshot completed $(date -u) ";
-exit 0;
+# ==============================================================================
+# COMPLETION
+# ==============================================================================
+
+log "rsyncshot completed successfully"
+exit 0
