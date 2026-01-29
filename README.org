@@ -1,73 +1,215 @@
-* About rsyncshot
-Linux backups backup with bash, cron, rsync, and hard links. 
-Inspired by http://www.mikerubel.org/computers/rsync_snapshots/
-* Usage
-** Simple Setup
-rsyncshot installs itself. To setup, just run the following commands: 
-#+begin_src sh
-  wget https://raw.githubusercontent.com/cjennings/rsyncshot/main/rsyncshot
-  sudo bash ./rsyncshot setup
-#+end_src
-or simply clone this repo and run make install as root.
-** Automatic Hourly/Daily/Weekly Schedule via Cron
-rsyncshot will install a default schedule: 
-- every hour at the top of the hour
-- every day at noon
-- every week on Sunday at noon
+#+TITLE: rsyncshot
+#+AUTHOR: Craig Jennings
 
-Edit the schedule with: 
-#+begin_src sh
-sudo crontab -e 
-#+end_src
-** Manual Backups
-Manual backups in the terminal with two arguments: 
-- TYPE is a way to group backups together. Automatic backups will have the TYPE as HOURLY, DAILY, or WEEKLY. But you can give your manual backups any TYPE you wish. 
-- MAX is the maximum number of backups before the oldest gets removed. 
+* About
 
-For instance: 
+rsyncshot creates space-efficient backups using rsync and hard links. Each snapshot looks like a full backup, but unchanged files share disk space across all snapshots.
+
+Supports backing up to local drives (USB, NFS) or remote servers via SSH.
+
+Inspired by [[http://www.mikerubel.org/computers/rsync_snapshots/][Mike Rubel's rsync snapshots]].
+
+* Quick Start
+
 #+begin_src sh
-rsyncshot manual 100
+# Download and install
+wget https://raw.githubusercontent.com/cjennings/rsyncshot/main/rsyncshot
+sudo bash ./rsyncshot setup
+
+# Or clone and install
+git clone https://github.com/cjennings/rsyncshot
+cd rsyncshot && sudo make install
 #+end_src
 
-** Filtering
-Specify which directories to backup by editing /etc/rsyncshot/includes.txt. The defaults are:
+After setup, edit =/etc/rsyncshot/config= to set your backup destination.
+
+* Commands
+
+| Command                    | Description                              |
+|----------------------------+------------------------------------------|
+| =rsyncshot backup=         | Run an immediate one-off backup          |
+| =rsyncshot <name> <count>= | Create snapshot with name and retention  |
+| =rsyncshot setup=          | Install script and configure cron jobs   |
+| =rsyncshot status=         | Show installation and environment status |
+| =rsyncshot list=           | Show existing snapshots with sizes       |
+| =rsyncshot dryrun <n> <c>= | Preview backup without making changes    |
+| =rsyncshot help=           | Show help message                        |
+
+** Examples
+
+#+begin_src sh
+# Immediate backup (creates manual.0)
+sudo rsyncshot backup
+
+# Keep 24 hourly snapshots
+sudo rsyncshot hourly 24
+
+# Keep 7 daily snapshots
+sudo rsyncshot daily 7
+
+# Preview what would be backed up
+sudo rsyncshot dryrun manual 1
+
+# Check if everything is configured correctly
+sudo rsyncshot status
+
+# See existing snapshots
+sudo rsyncshot list
+#+end_src
+
+* Configuration
+
+All settings live in =/etc/rsyncshot/config=. Created automatically by =rsyncshot setup=.
+
+** Backup Modes
+
+*** Remote Mode (SSH)
+
+Back up to a remote server over SSH:
+
+#+begin_src sh
+REMOTE_HOST="myserver"
+REMOTE_PATH="/mnt/backups"
+#+end_src
+
+Backups go to =myserver:/mnt/backups/hostname/=.
+
+If your SSH key isn't in root's =~/.ssh/=, specify the path:
+
+#+begin_src sh
+SSH_IDENTITY_FILE="/home/youruser/.ssh/id_ed25519"
+#+end_src
+
+*** Local Mode
+
+Back up to a mounted drive (USB, NFS, etc.):
+
+#+begin_src sh
+REMOTE_HOST=""
+MOUNTDIR="/media/backup"
+#+end_src
+
+Backups go to =/media/backup/hostname/=. If the drive isn't mounted, rsyncshot will try to mount it.
+
+** What Gets Backed Up
+
+Edit =/etc/rsyncshot/include.txt= - one directory per line (supports paths with spaces):
+
 #+begin_src
-  - /home
-  - /etc 
-  - /usr/local/bin
+/home
+/etc
+/usr/local/bin
+# Comments start with #
 #+end_src
-Specify what filetype patterns to exclude by editing /etc/rsyncshot/excludes.txt. The defaults are:
+
+** What Gets Excluded
+
+Edit =/etc/rsyncshot/exclude.txt= - one pattern per line:
+
 #+begin_src
-  - *.pyc
-  - *.pyo
-  - *.class
-  - *.elc
-  - *.o
-  - *.tmp
-  - .cache*
+# Caches and temp files
+.cache
+*.tmp
+*.log
+
+# Build artifacts
+node_modules
+__pycache__
+*.pyc
 #+end_src
-** A Few Safeguards
-- rsyncshot separates backups by the machine's name. Use one external drive to backup multiple machines without conflicts.
-- rsyncshot leverages lockfiles to prevent overapping runs. A rsyncshot backup will not begin if a previous run is still in progress. 
-- rsyncshot will validate the specified source directories exist before beginning the backup. 
-- rsyncshot validates it's backing up to a mounted drive. If the drive isn't mounted, rsyncshot attempts to mount it. 
-- Backup directory permissions are changed to read-only to avoid mistaken deletion.
-- rsyncshot logs the details of all runs to /var/log/rsyncshot.log. 
-** Requirements
-- Bash
-- Cron
-- Rsync
-- Grep
-- Flock
-** Uninstalling
-- run 'sudo make uninstall' from the cloned directory.
-- delete relevant cron entries as root
 
-or become root and remove
-- the /usr/local/bin/rsyncshot script
-- the /etc/rsyncshot directory
-- (optional) /var/log/rsyncshot.log
-... and the relevant cron entries with crontab -e
+* Automatic Backups
 
-* Notes
-rsyncshot isn't production software, even though the underlying utilities are.
+Setup installs a default cron schedule:
+
+| Type   | Schedule                    | Retention |
+|--------+-----------------------------+-----------|
+| Hourly | Every hour, 1am-11pm        | 22        |
+| Daily  | Noon, Monday-Saturday       | 6         |
+| Weekly | Noon, Sunday                | 51        |
+
+Edit with =sudo crontab -e=.
+
+* How It Works
+
+1. rsync copies your directories to =destination/latest/=
+2. Oldest snapshot beyond retention count is deleted
+3. Existing snapshots rotate (=hourly.0= → =hourly.1= → =hourly.2=...)
+4. =latest/= is hard-linked to =hourly.0= (or whatever type you specified)
+
+Hard links mean unchanged files share disk space. A 100GB backup with 24 hourly snapshots might only use 110GB total if most files don't change.
+
+* Safeguards
+
+- *Separate by hostname* - one drive can back up multiple machines
+- *Lockfile* - prevents overlapping runs
+- *Validates sources* - checks directories exist before starting
+- *Validates destination* - checks mount or SSH connectivity
+- *Checks rsync exit code* - won't rotate if backup failed
+- *Read-only snapshots* - prevents accidental deletion
+- *Timestamped logging* - all runs logged to =/var/log/rsyncshot.log=
+
+* Requirements
+
+- bash
+- rsync
+- cron
+- grep
+- flock
+- ssh (for remote mode)
+
+The script checks for rsync and ssh at startup and shows install instructions if missing.
+
+* Uninstalling
+
+#+begin_src sh
+# If you cloned the repo
+sudo make uninstall
+
+# Or manually
+sudo rm /usr/local/bin/rsyncshot
+sudo rm -rf /etc/rsyncshot
+sudo rm /var/log/rsyncshot.log  # optional
+sudo crontab -e  # remove rsyncshot entries
+#+end_src
+
+* Testing
+
+An automated test suite is included in the =tests/= directory.
+
+** Running Tests
+
+#+begin_src sh
+# Run all tests (requires sudo)
+sudo ./tests/test_rsyncshot.sh
+
+# Skip slow backup/cron tests
+sudo ./tests/test_rsyncshot.sh --quick
+
+# Verbose output
+sudo ./tests/test_rsyncshot.sh -v
+#+end_src
+
+** Test Coverage
+
+| Category    | Tests | Description                                          |
+|-------------+-------+------------------------------------------------------|
+| Validation  |     6 | Input validation, help command, argument checking    |
+| Include     |     5 | Path parsing, comments, empty lines, spaces in paths |
+| Dry-run     |     4 | Preview mode doesn't modify anything                 |
+| Backup      |     7 | Directory creation, file copying, rotation, retention, exclusions |
+| Cron        |     3 | Cron job management, no duplicates, preserves existing jobs |
+
+** Test Structure
+
+- =tests/test_rsyncshot.sh= - Main test runner
+- =tests/lib/test_helpers.sh= - Assertion functions and test environment setup
+- =tests/cases/test_validation.sh= - Input validation tests
+- =tests/cases/test_includes.sh= - Include file parsing tests
+- =tests/cases/test_dryrun.sh= - Dry-run mode tests
+- =tests/cases/test_backup.sh= - Backup and rotation tests
+- =tests/cases/test_cron.sh= - Cron job management tests
+
+* License
+
+GPL v3. See [[file:LICENSE][LICENSE]] file.
