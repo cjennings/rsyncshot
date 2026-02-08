@@ -888,7 +888,7 @@ while IFS= read -r SOURCE || [ -n "$SOURCE" ]; do
 
     if [ "$DRYRUN" = true ]; then
         # Dry run: show what would be transferred
-        rsync -avh --times --timeout=300 \
+        rsync -avh --times --timeout=600 \
               --delete --delete-excluded \
               --exclude-from="$EXCLUDES" \
               --dry-run \
@@ -896,7 +896,7 @@ while IFS= read -r SOURCE || [ -n "$SOURCE" ]; do
         RSYNC_EXIT=$?
     else
         # Actual backup
-        rsync -avh --times --timeout=300 \
+        rsync -avh --times --timeout=600 \
               --delete --delete-excluded \
               --exclude-from="$EXCLUDES" \
               "$SOURCE" "$DESTINATION"/latest
