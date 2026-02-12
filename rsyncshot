@@ -904,7 +904,12 @@ while IFS= read -r SOURCE || [ -n "$SOURCE" ]; do
     fi
 
     # Check rsync exit code
-    if [ $RSYNC_EXIT -ne 0 ]; then
+    # Exit 24 = "some files vanished before they could be transferred" (normal —
+    # files deleted during backup, e.g. temp files, editor swap files). Not a failure.
+    # Exit 23 = "partial transfer due to error" — may indicate real issues, treat as failure.
+    if [ $RSYNC_EXIT -eq 24 ]; then
+        log "Warning: some files vanished during transfer of $SOURCE (rsync exit 24, non-fatal)"
+    elif [ $RSYNC_EXIT -ne 0 ]; then
         echo "ERROR: rsync failed for $SOURCE (exit code: $RSYNC_EXIT)" 1>&2
         RSYNC_FAILED=true
     fi
