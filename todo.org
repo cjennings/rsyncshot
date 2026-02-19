@@ -1,0 +1,7 @@
+#+TITLE: rsyncshot Tasks
+#+AUTHOR: Craig Jennings & Claude
+#+DATE: 2026-02-19
+
+* rsyncshot Open Work
+
+* rsyncshot Resolved
