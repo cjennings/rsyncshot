@@ -4,4 +4,16 @@
 
 * rsyncshot Open Work
 
+** TODO Add internal flock locking to rsyncshot; remove external flock wrappers from crontabs
+
+Implement internal flock locking in rsyncshot so cron entries don't need external
+flock wrappers. See [[file:docs/internal-flock-suggestion.txt][docs/internal-flock-suggestion.txt]] for implementation details
+(exec-based locking with fd 200, non-blocking -n flag recommended).
+
+After implementing, remove flock wrappers from root crontab on:
+- velox (desktop)
+- velox laptop
+
+See also: [[file:docs/flock-internal-locking.org][docs/flock-internal-locking.org]]
+
 * rsyncshot Resolved
