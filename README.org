@@ -120,6 +120,16 @@ __pycache__
 *.pyc
 #+end_src
 
+** Lock File
+
+rsyncshot takes an exclusive lock before each backup, so concurrent runs can't overlap (a slow backup overrunning the next cron tick fails fast instead of stacking up). Cron entries need no =flock= wrapper.
+
+The lock defaults to =/run/lock/rsyncshot.lock= (a root-only directory), falling back to =/var/lock= then =/tmp=. Override it in the config if needed:
+
+#+begin_src sh
+LOCKFILE="/run/lock/rsyncshot.lock"
+#+end_src
+
 * Automatic Backups
 
 Setup installs a default cron schedule:
@@ -129,6 +139,8 @@ Setup installs a default cron schedule:
 | Hourly | Every hour, 1am-11pm        | 22        |
 | Daily  | Noon, Monday-Saturday       | 6         |
 | Weekly | Noon, Sunday                | 51        |
+
+The installed cron lines carry no =flock= wrapper - rsyncshot locks itself (see Lock File above).
 
 Edit with =sudo crontab -e=.
 
@@ -141,10 +153,12 @@ Edit with =sudo crontab -e=.
 
 Hard links mean unchanged files share disk space. A 100GB backup with 24 hourly snapshots might only use 110GB total if most files don't change.
 
+Each source is stored under its full path (=/usr/local/bin= lands at =latest/usr/local/bin=), so sources never collide and restores are unambiguous. Ownership is preserved as numeric uid/gid, so a restore stays correct even when the destination has a different user/group database.
+
 * Safeguards
 
 - *Separate by hostname* - one drive can back up multiple machines
-- *Lockfile* - prevents overlapping runs
+- *Internal lock* - prevents overlapping runs; no =flock= wrapper needed in cron
 - *Validates sources* - checks directories exist before starting
 - *Validates destination* - checks mount or SSH connectivity
 - *Checks rsync exit code* - won't rotate if backup failed
@@ -210,23 +224,32 @@ sudo ./tests/test_rsyncshot.sh -v
 
 *** Test Coverage
 
-| Category    | Tests | Description                                          |
-|-------------+-------+------------------------------------------------------|
-| Validation  |     6 | Input validation, help command, argument checking    |
-| Include     |     5 | Path parsing, comments, empty lines, spaces in paths |
-| Dry-run     |     4 | Preview mode doesn't modify anything                 |
-| Backup      |     7 | Directory creation, file copying, rotation, retention, exclusions |
-| Cron        |     3 | Cron job management, no duplicates, preserves existing jobs |
+| Category    | Tests | Description                                                       |
+|-------------+-------+------------------------------------------------------------------|
+| Validation  |     9 | Input validation, help, arg checks, empty-path and zero-count guards |
+| Functions   |     6 | is_mounted exact-match logic, derive_paths mode/path derivation   |
+| Include     |     5 | Path parsing, comments, empty lines, spaces in paths             |
+| Dry-run     |     4 | Preview mode doesn't modify anything                            |
+| Rsync flags |     1 | rsync invoked with --numeric-ids and -R (relative paths)        |
+| Backup      |     8 | Creation, copying, rotation, retention, exclusions, basename collisions |
+| Cron        |     4 | Cron management, no duplicates, preserves jobs, no flock wrapper |
+| Locking     |     3 | Refuses concurrent runs, dryrun not blocked, sequential runs     |
+| Remote      | gated | Backup + rotation over SSH-to-localhost (skipped if unavailable) |
+| Total       |    40 | (plus the gated remote suite when localhost SSH is available)    |
 
 *** Test Structure
 
 - =tests/test_rsyncshot.sh= - Main test runner
 - =tests/lib/test_helpers.sh= - Assertion functions and test environment setup
 - =tests/cases/test_validation.sh= - Input validation tests
+- =tests/cases/test_functions.sh= - Unit tests for is_mounted and derive_paths
 - =tests/cases/test_includes.sh= - Include file parsing tests
 - =tests/cases/test_dryrun.sh= - Dry-run mode tests
+- =tests/cases/test_rsync_flags.sh= - rsync invocation flag tests (command-capture shim)
 - =tests/cases/test_backup.sh= - Backup and rotation tests
 - =tests/cases/test_cron.sh= - Cron job management tests
+- =tests/cases/test_locking.sh= - Concurrency lock tests
+- =tests/cases/test_remote.sh= - Remote-mode (SSH) tests, gated on localhost SSH
 
 * License
 
