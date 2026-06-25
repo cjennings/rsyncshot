@@ -95,6 +95,7 @@ run_test_file "$SCRIPT_DIR/cases/test_functions.sh" "functions"
 run_test_file "$SCRIPT_DIR/cases/test_includes.sh" "includes"
 run_test_file "$SCRIPT_DIR/cases/test_dryrun.sh" "dryrun"
 run_test_file "$SCRIPT_DIR/cases/test_rsync_flags.sh" "rsync_flags"
+run_test_file "$SCRIPT_DIR/cases/test_locking.sh" "locking"
 
 if [ "$QUICK" = false ]; then
     run_test_file "$SCRIPT_DIR/cases/test_backup.sh" "backup"

@@ -119,6 +119,35 @@ EOF
 }
 
 # ------------------------------------------------------------------------------
+# Test: Cron entries no longer wrap rsyncshot in an external flock
+# ------------------------------------------------------------------------------
+# rsyncshot locks internally now, so setup should write bare cron commands.
+test_cron_no_flock_wrapper() {
+    setup_test_env
+    save_crontab
+
+    crontab -r 2>/dev/null || true
+
+    cat > "$TEST_CONFIG_DIR/config" << EOF
+REMOTE_HOST=""
+MOUNTDIR="$TEST_BACKUP_DIR"
+EOF
+    create_test_includes
+    create_test_excludes
+
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" SCRIPTLOC="/tmp/rsyncshot-test" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" setup >/dev/null 2>&1 || true
+
+    local crontab_content
+    crontab_content=$(crontab -l 2>/dev/null)
+
+    restore_crontab
+    teardown_test_env
+
+    assert_not_contains "$crontab_content" "flock" "cron entries should not wrap rsyncshot in flock (internal locking)" || return 1
+    assert_contains "$crontab_content" "rsyncshot" "cron should still contain rsyncshot entries" || return 1
+}
+
+# ------------------------------------------------------------------------------
 # Run tests
 # ------------------------------------------------------------------------------
 run_cron_tests() {
@@ -129,6 +158,7 @@ run_cron_tests() {
     run_test "setup adds cron jobs" test_setup_adds_cron_jobs
     run_test "repeated setup doesn't duplicate entries" test_no_duplicate_cron_entries
     run_test "setup preserves existing cron jobs" test_preserves_existing_cron
+    run_test "cron entries have no flock wrapper" test_cron_no_flock_wrapper
 }
 
 # Run if executed directly

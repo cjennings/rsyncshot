@@ -149,11 +149,16 @@ RM="rm"
 # ------------------------------------------------------------------------------
 # CONCURRENCY CONTROL
 # ------------------------------------------------------------------------------
-# Use flock to prevent multiple instances from running simultaneously.
-# This is important when cron might trigger a new run before the previous
-# one completes (e.g., slow network, large backup).
+# rsyncshot acquires an exclusive lock internally (see acquire_lock) before the
+# backup phase, so a slow backup overrunning the next cron tick can't overlap.
+# Cron entries therefore do NOT need an external flock wrapper.
+#
+# LOCKFILE is the lock path. When unset, it's chosen at runtime (below): the
+# first of /run/lock, /var/lock, /tmp that exists and is writable. /run/lock and
+# /var/lock are root-only, which avoids the symlink-truncation risk of a
+# predictable name in world-writable /tmp. Override in the config file if needed.
 
-FLOCKCHECK="flock -x /tmp/rsyncshot.lock -c"
+LOCKFILE="${LOCKFILE:-}"
 
 # ------------------------------------------------------------------------------
 # DEFAULT CRON SCHEDULE
@@ -242,6 +247,18 @@ require_destination_configured()
 
 derive_paths
 
+# Choose a default lock file if neither the config nor the environment set one.
+# Prefer root-only dirs over world-writable /tmp.
+if [ -z "$LOCKFILE" ]; then
+    for _lockdir in /run/lock /var/lock /tmp; do
+        if [ -d "$_lockdir" ] && [ -w "$_lockdir" ]; then
+            LOCKFILE="$_lockdir/rsyncshot.lock"
+            break
+        fi
+    done
+    : "${LOCKFILE:=/tmp/rsyncshot.lock}"
+fi
+
 # ==============================================================================
 # UTILITY FUNCTIONS
 # ==============================================================================
@@ -311,6 +328,23 @@ error()
 log()
 {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+# ------------------------------------------------------------------------------
+# acquire_lock() - Take an exclusive, non-blocking lock for the backup phase
+# ------------------------------------------------------------------------------
+# Opens LOCKFILE on fd 200 and flock -n's it. The lock is held until the script
+# exits (fd 200 auto-closes), so a second concurrent backup fails fast rather
+# than overlapping. Only the real backup path calls this; help, list, status,
+# and dryrun never lock, so they're never blocked by a running backup.
+
+acquire_lock()
+{
+    exec 200>"$LOCKFILE" || error "cannot open lock file $LOCKFILE"
+    if ! flock -n 200; then
+        log "Another rsyncshot instance is already running (lock held on $LOCKFILE) - exiting."
+        exit 1
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -738,10 +772,10 @@ EOF
     CRONTEMP=$(mktemp)
     crontab -l 2>/dev/null | grep -v "rsyncshot" > "$CRONTEMP" || true
     {
-        echo "# rsyncshot automated backups"
-        echo "$CRON_H $FLOCKCHECK '$SCRIPTLOC hourly 22 >> $LOGFILE 2>&1'"
-        echo "$CRON_D $FLOCKCHECK '$SCRIPTLOC daily 6 >> $LOGFILE 2>&1'"
-        echo "$CRON_W $FLOCKCHECK '$SCRIPTLOC weekly 51 >> $LOGFILE 2>&1'"
+        echo "# rsyncshot automated backups (locks internally; no external wrapper needed)"
+        echo "$CRON_H $SCRIPTLOC hourly 22 >> $LOGFILE 2>&1"
+        echo "$CRON_D $SCRIPTLOC daily 6 >> $LOGFILE 2>&1"
+        echo "$CRON_W $SCRIPTLOC weekly 51 >> $LOGFILE 2>&1"
     } >> "$CRONTEMP"
     crontab "$CRONTEMP"
     $RM "$CRONTEMP"
@@ -807,7 +841,7 @@ if ! command -v rsync &> /dev/null; then
 fi
 
 if ! command -v flock &> /dev/null; then
-    echo "ERROR: flock is not installed (required for cron job locking)." 1>&2
+    echo "ERROR: flock is not installed (required for concurrency locking)." 1>&2
     echo ""
     echo "Install flock using your package manager:"
     echo "  Arch Linux:    sudo pacman -S util-linux"
@@ -887,6 +921,14 @@ if [ ! -f "$EXCLUDES" ]; then error "Exclude file $EXCLUDES not found."; fi
 
 # --- Refuse to operate against a filesystem root ---
 require_destination_configured
+
+# --- Acquire exclusive lock before any destructive or mutating work ---
+# Real backups only; dryrun and read-only commands are never blocked. Taken
+# before the mode-specific validation so even the local mount attempt is
+# serialized.
+if [ "$DRYRUN" = false ]; then
+    acquire_lock
+fi
 
 # --- Mode-specific destination validation ---
 if [ "$MODE" = "remote" ]; then
