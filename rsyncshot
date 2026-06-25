@@ -434,10 +434,12 @@ list_snapshots()
             cd '$BASE_PATH'
             found=0
             for dir in */ ; do
+                if [ \"\$dir\" = 'latest/' ]; then continue; fi
                 if [ -d \"\$dir\" ] && [ \"\$dir\" != '*/' ]; then
                     found=1
                     name=\$(basename \"\$dir\")
                     mtime=\$(stat -c '%y' \"\$dir\" 2>/dev/null | cut -d'.' -f1)
+                    [ -z \"\$mtime\" ] && mtime=\$(stat -f '%Sm' \"\$dir\" 2>/dev/null)
                     size=\$(du -sh \"\$dir\" 2>/dev/null | cut -f1)
                     printf '%-20s %s  %s\n' \"\$name\" \"\$mtime\" \"\$size\"
                 fi
@@ -609,7 +611,7 @@ show_status()
     echo "Snapshots:"
     if [ "$MODE" = "remote" ]; then
         if ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "true" 2>/dev/null; then
-            SNAP_COUNT=$(run_cmd "ls -d '$REMOTE_DEST'/*/ 2>/dev/null | wc -l" 2>/dev/null || echo 0)
+            SNAP_COUNT=$(run_cmd "ls -d '$REMOTE_DEST'/*/ 2>/dev/null | grep -v '/latest/\$' | wc -l" 2>/dev/null || echo 0)
             if [ "$SNAP_COUNT" -gt 0 ]; then
                 echo "  $SNAP_COUNT snapshot(s) found (run 'rsyncshot list' for details)"
             else
@@ -620,7 +622,7 @@ show_status()
         fi
     else
         if [ -d "$MOUNTDIR/$HOSTNAME" ]; then
-            SNAP_COUNT=$(find "$MOUNTDIR/$HOSTNAME" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+            SNAP_COUNT=$(find "$MOUNTDIR/$HOSTNAME" -mindepth 1 -maxdepth 1 -type d ! -name latest 2>/dev/null | wc -l)
             if [ "$SNAP_COUNT" -gt 0 ]; then
                 echo "  $SNAP_COUNT snapshot(s) found (run 'rsyncshot list' for details)"
             else
@@ -944,8 +946,20 @@ if [ "$MODE" = "remote" ]; then
     if [ -n "$SSH_IDENTITY_FILE" ]; then
         SSH_OPTS+=(-i "$SSH_IDENTITY_FILE")
     fi
-    if ! ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "true" 2>/dev/null; then
-        error "Cannot connect to $REMOTE_HOST via SSH."
+    # An unreachable remote is expected for a scheduled backup (laptop asleep,
+    # VPN down, NAS offline) and shouldn't be logged as a failure. But a broken
+    # setup (revoked key, changed host key) must surface loudly — a backup tool
+    # that silently no-ops forever is the worst failure mode. Distinguish the two
+    # by the SSH error: auth and host-key problems are real errors; everything
+    # else (timeout, DNS, connection refused) is transient, so skip with exit 0.
+    if ! SSH_ERR=$(ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "true" 2>&1); then
+        case "$SSH_ERR" in
+            *"Permission denied"*|*"Host key verification failed"*|*"IDENTIFICATION HAS CHANGED"*)
+                error "Cannot connect to $REMOTE_HOST (authentication or host-key failure): $SSH_ERR"
+                ;;
+        esac
+        log "Remote $REMOTE_HOST is unreachable - skipping backup, will retry next run."
+        exit 0
     fi
 else
     # Local mode: verify mount point exists
@@ -1020,8 +1034,9 @@ while IFS= read -r SOURCE || [ -n "$SOURCE" ]; do
               "$SOURCE" "$DESTINATION"/latest
         RSYNC_EXIT=$?
     else
-        # Actual backup
-        rsync -avhR --numeric-ids --times --timeout=600 \
+        # Actual backup. No -v: per-file output would balloon the logfile on every
+        # run. --info=stats1 logs a one-block transfer summary instead.
+        rsync -ahR --numeric-ids --info=stats1 --times --timeout=600 \
               --delete --delete-excluded \
               --exclude-from="$EXCLUDES" \
               "$SOURCE" "$DESTINATION"/latest
@@ -1086,8 +1101,8 @@ fi
 BEYOND=$((MAX+1))
 if run_cmd "[ -d '$BASE_PATH/$TYPE.$BEYOND' ]"; then
     log "Cleaning up orphaned snapshot: $TYPE.$BEYOND"
-    run_cmd "chmod -R u+w '$BASE_PATH/$TYPE.$BEYOND'"
-    run_cmd "$RM -rf '$BASE_PATH/$TYPE.$BEYOND'"
+    run_cmd "chmod -R u+w '$BASE_PATH/$TYPE.$BEYOND'" || true
+    run_cmd "$RM -rf '$BASE_PATH/$TYPE.$BEYOND'" || log "Warning: could not remove orphaned snapshot $TYPE.$BEYOND"
 fi
 
 # --- Rotate existing snapshots (newest to oldest to avoid overwriting) ---
@@ -1102,7 +1117,7 @@ for (( start=$((MAX)); start>=0; start-- )); do
 done
 
 # --- Update timestamp on latest/ directory ---
-run_cmd "touch '$BASE_PATH/latest'"
+run_cmd "touch '$BASE_PATH/latest'" || log "Warning: could not update timestamp on latest/"
 
 # --- Create new snapshot using hard links ---
 # cp -al creates a copy where all files are hard links to the originals.
@@ -1114,7 +1129,15 @@ if ! run_cmd "$CP -al '$BASE_PATH/latest' '$BASE_PATH/$TYPE.0'"; then
 fi
 
 # --- Make snapshot read-only to prevent accidental modification ---
-run_cmd "chmod -w '$BASE_PATH/$TYPE.0'"
+# Mark every directory in the snapshot read-only, not just the top. Removing
+# write on a directory blocks adding, deleting, or renaming its entries, which is
+# what protects the snapshot from tampering. Only directories are touched, never
+# files: cp -al hard-links files (shared inodes across snapshots), so chmod-ing a
+# file here would change its permissions in every other snapshot too. Directories
+# are created fresh by cp -al, so they're safe to chmod. Best-effort: some remote
+# filesystems (ZFS/ACL) may reject it, which is non-fatal. The rotation restores
+# write with chmod -R u+w before deleting the oldest snapshot.
+run_cmd "find '$BASE_PATH/$TYPE.0' -type d -exec chmod a-w {} +" || log "Warning: could not mark $TYPE.0 read-only"
 
 # ==============================================================================
 # COMPLETION

@@ -38,6 +38,30 @@ EOF
 }
 
 # ------------------------------------------------------------------------------
+# An unreachable remote skips gracefully (exit 0), not an error
+# ------------------------------------------------------------------------------
+# Needs no real remote: an unresolvable .invalid host makes the SSH check fail,
+# so this runs unconditionally (not behind the localhost gate).
+test_remote_unreachable_skips_gracefully() {
+    setup_test_env
+    cat > "$TEST_CONFIG_DIR/config" <<EOF
+REMOTE_HOST="rsyncshot-nonexistent.invalid"
+REMOTE_PATH="/tmp/rsyncshot-noremote"
+EOF
+    create_test_includes >/dev/null
+    create_test_excludes >/dev/null
+
+    local output rc
+    output=$(INSTALLHOME="$TEST_CONFIG_DIR" LOCKFILE="$TEST_DIR/lock" "$SCRIPT_PATH" manual 1 2>&1)
+    rc=$?
+
+    teardown_test_env
+
+    assert_exit_code 0 "$rc" "unreachable remote should skip gracefully (exit 0)" || return 1
+    assert_contains "$output" "unreachable" "should log the unreachable skip" || return 1
+}
+
+# ------------------------------------------------------------------------------
 # Run tests
 # ------------------------------------------------------------------------------
 run_remote_tests() {
@@ -45,8 +69,10 @@ run_remote_tests() {
     echo "Running remote (SSH) tests..."
     echo "------------------------------------------------------------"
 
+    run_test "unreachable remote skips gracefully" test_remote_unreachable_skips_gracefully
+
     if ! remote_available; then
-        echo "  SKIP: root cannot ssh to localhost with key auth — skipping remote tests"
+        echo "  SKIP: root cannot ssh to localhost with key auth — skipping live remote tests"
         return 0
     fi
 

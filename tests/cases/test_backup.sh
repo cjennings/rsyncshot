@@ -246,6 +246,56 @@ EOF
 }
 
 # ------------------------------------------------------------------------------
+# Test: nested directories in a snapshot are read-only (not just the top dir)
+# ------------------------------------------------------------------------------
+test_snapshot_nested_dirs_readonly() {
+    setup_test_env
+
+    create_test_config >/dev/null
+    create_test_includes >/dev/null
+    create_test_excludes >/dev/null
+
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 1 >/dev/null 2>&1
+
+    # A nested directory inside the snapshot (stored under its full path by -R)
+    local nested="$TEST_BACKUP_DIR/$HOSTNAME/MANUAL.0$TEST_SOURCE_DIR/home"
+    local perms
+    perms=$(stat -c '%A' "$nested" 2>/dev/null)
+    if [[ "$perms" == *w* ]]; then
+        echo "FAIL: nested snapshot dir should be read-only (perms: $perms)"
+        teardown_test_env
+        return 1
+    fi
+
+    teardown_test_env
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Test: status counts snapshots without counting the latest/ working dir
+# ------------------------------------------------------------------------------
+test_status_excludes_latest_from_count() {
+    setup_test_env
+
+    create_test_config >/dev/null
+    create_test_includes >/dev/null
+    create_test_excludes >/dev/null
+
+    # One backup creates MANUAL.0 plus the latest/ working dir
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 1 >/dev/null 2>&1
+
+    local output
+    output=$(sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" status 2>&1)
+
+    assert_contains "$output" "1 snapshot(s) found" "status should count 1 snapshot, not counting latest/" || {
+        teardown_test_env
+        return 1
+    }
+
+    teardown_test_env
+}
+
+# ------------------------------------------------------------------------------
 # Run tests
 # ------------------------------------------------------------------------------
 run_backup_tests() {
@@ -261,6 +311,8 @@ run_backup_tests() {
     run_test "backup command works as alias" test_backup_command
     run_test "excludes files matching patterns" test_excludes_patterns
     run_test "same-basename sources don't collide" test_no_basename_collision
+    run_test "status count excludes latest/" test_status_excludes_latest_from_count
+    run_test "nested snapshot dirs are read-only" test_snapshot_nested_dirs_readonly
 }
 
 # Run if executed directly
