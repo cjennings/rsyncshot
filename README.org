@@ -7,7 +7,7 @@ rsyncshot creates space-efficient backups using rsync and hard links. Each snaps
 
 Supports backing up to local drives (USB, NFS) or remote servers via SSH.
 
-Inspired by [[http://www.mikerubel.org/computers/rsync_snapshots/][Mike Rubel's rsync snapshots]].
+Inspired many years ago by [[http://www.mikerubel.org/computers/rsync_snapshots/][Mike Rubel's rsync snapshots]].
 
 * Quick Start
 
@@ -27,8 +27,8 @@ After setup, edit =/etc/rsyncshot/config= to set your backup destination.
 
 * Commands
 
-| Command                    | Description                              |
-|----------------------------+------------------------------------------|
+| Command                  | Description                              |
+|--------------------------+------------------------------------------|
 | =rsyncshot backup=         | Run an immediate one-off backup          |
 | =rsyncshot <name> <count>= | Create snapshot with name and retention  |
 | =rsyncshot setup=          | Install script and configure cron jobs   |
