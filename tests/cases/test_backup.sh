@@ -15,9 +15,7 @@ test_creates_backup_structure() {
     create_test_includes
     create_test_excludes
 
-    local output
-    output=$(sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 1 2>&1)
-    local exit_code=$?
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 1 >/dev/null 2>&1
 
     # Check directory structure
     assert_dir_exists "$TEST_BACKUP_DIR/$HOSTNAME" "should create hostname dir" || {
@@ -46,15 +44,14 @@ test_copies_files() {
     create_test_includes
     create_test_excludes
 
-    local output
-    output=$(sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 1 2>&1)
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 1 >/dev/null 2>&1
 
     # Check files were copied
-    assert_file_exists "$TEST_BACKUP_DIR/$HOSTNAME/latest/home/testuser/file1.txt" "should copy file1.txt" || {
+    assert_file_exists "$TEST_BACKUP_DIR/$HOSTNAME/latest$TEST_SOURCE_DIR/home/testuser/file1.txt" "should copy file1.txt" || {
         teardown_test_env
         return 1
     }
-    assert_file_exists "$TEST_BACKUP_DIR/$HOSTNAME/latest/etc/test.conf" "should copy test.conf" || {
+    assert_file_exists "$TEST_BACKUP_DIR/$HOSTNAME/latest$TEST_SOURCE_DIR/etc/test.conf" "should copy test.conf" || {
         teardown_test_env
         return 1
     }
@@ -72,8 +69,7 @@ test_snapshot_readonly() {
     create_test_includes
     create_test_excludes
 
-    local output
-    output=$(sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 1 2>&1)
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 1 >/dev/null 2>&1
 
     # Check snapshot directory has no write permission
     # Note: We use stat to check actual permissions because -w always returns true for root
@@ -100,8 +96,8 @@ test_rotation() {
     create_test_excludes
 
     # Run backup twice
-    sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 3 2>&1 >/dev/null
-    sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 3 2>&1 >/dev/null
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 3 >/dev/null 2>&1
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 3 >/dev/null 2>&1
 
     # Should have MANUAL.0 and MANUAL.1
     assert_dir_exists "$TEST_BACKUP_DIR/$HOSTNAME/MANUAL.0" "should have MANUAL.0" || {
@@ -127,8 +123,8 @@ test_retention_limit() {
     create_test_excludes
 
     # Run backup 4 times with retention of 3
-    for i in 1 2 3 4; do
-        sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 3 2>&1 >/dev/null
+    for _ in 1 2 3 4; do
+        sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 3 >/dev/null 2>&1
     done
 
     # Should have MANUAL.0, MANUAL.1, MANUAL.2 but NOT MANUAL.3
@@ -162,9 +158,7 @@ test_backup_command() {
     create_test_includes
     create_test_excludes
 
-    local output
-    output=$(sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" backup 2>&1)
-    local exit_code=$?
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" backup >/dev/null 2>&1
 
     # Should create MANUAL.0 (backup is alias for manual 1)
     assert_dir_exists "$TEST_BACKUP_DIR/$HOSTNAME/MANUAL.0" "backup should create MANUAL.0" || {
@@ -194,20 +188,56 @@ EOF
     echo "temp" > "$TEST_SOURCE_DIR/home/testuser/temp.tmp"
     echo "log" > "$TEST_SOURCE_DIR/home/testuser/app.log"
 
-    local output
-    output=$(sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 1 2>&1)
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 1 >/dev/null 2>&1
 
     # Excluded files should not exist in backup
-    assert_file_not_exists "$TEST_BACKUP_DIR/$HOSTNAME/latest/home/testuser/temp.tmp" "should exclude .tmp files" || {
+    assert_file_not_exists "$TEST_BACKUP_DIR/$HOSTNAME/latest$TEST_SOURCE_DIR/home/testuser/temp.tmp" "should exclude .tmp files" || {
         teardown_test_env
         return 1
     }
-    assert_file_not_exists "$TEST_BACKUP_DIR/$HOSTNAME/latest/home/testuser/app.log" "should exclude .log files" || {
+    assert_file_not_exists "$TEST_BACKUP_DIR/$HOSTNAME/latest$TEST_SOURCE_DIR/home/testuser/app.log" "should exclude .log files" || {
         teardown_test_env
         return 1
     }
     # Regular files should still exist
-    assert_file_exists "$TEST_BACKUP_DIR/$HOSTNAME/latest/home/testuser/file1.txt" "should include regular files" || {
+    assert_file_exists "$TEST_BACKUP_DIR/$HOSTNAME/latest$TEST_SOURCE_DIR/home/testuser/file1.txt" "should include regular files" || {
+        teardown_test_env
+        return 1
+    }
+
+    teardown_test_env
+}
+
+# ------------------------------------------------------------------------------
+# Test: Same-basename sources don't collide (relative paths)
+# ------------------------------------------------------------------------------
+# Two includes with the same basename ("bin") previously both mapped to
+# latest/bin, and the second sync's --delete wiped the first. With -R each is
+# stored under its full path, so both survive.
+test_no_basename_collision() {
+    setup_test_env
+
+    mkdir -p "$TEST_SOURCE_DIR/opt/bin" "$TEST_SOURCE_DIR/usr/bin"
+    echo "from-opt" > "$TEST_SOURCE_DIR/opt/bin/optfile"
+    echo "from-usr" > "$TEST_SOURCE_DIR/usr/bin/usrfile"
+
+    cat > "$TEST_CONFIG_DIR/config" <<EOF
+REMOTE_HOST=""
+MOUNTDIR="$TEST_BACKUP_DIR"
+EOF
+    cat > "$TEST_CONFIG_DIR/include.txt" <<EOF
+$TEST_SOURCE_DIR/opt/bin
+$TEST_SOURCE_DIR/usr/bin
+EOF
+    create_test_excludes >/dev/null
+
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 1 >/dev/null 2>&1
+
+    assert_file_exists "$TEST_BACKUP_DIR/$HOSTNAME/latest$TEST_SOURCE_DIR/opt/bin/optfile" "opt/bin should survive" || {
+        teardown_test_env
+        return 1
+    }
+    assert_file_exists "$TEST_BACKUP_DIR/$HOSTNAME/latest$TEST_SOURCE_DIR/usr/bin/usrfile" "usr/bin should survive (no collision)" || {
         teardown_test_env
         return 1
     }
@@ -230,6 +260,7 @@ run_backup_tests() {
     run_test "respects retention limit" test_retention_limit
     run_test "backup command works as alias" test_backup_command
     run_test "excludes files matching patterns" test_excludes_patterns
+    run_test "same-basename sources don't collide" test_no_basename_collision
 }
 
 # Run if executed directly

@@ -1,0 +1,7 @@
+# Project shellcheck configuration.
+#
+# Disable the "can't follow sourced file" infos. They are not actionable here:
+#   - rsyncshot sources /etc/rsyncshot/config, which doesn't exist at lint time.
+#   - the test suite sources lib/test_helpers.sh via a runtime-computed path.
+# Both are correct at runtime; shellcheck simply can't resolve them statically.
+disable=SC1090,SC1091

@@ -131,14 +131,20 @@ INCLUDES="$INSTALLHOME/include.txt"    # Directories to back up (one per line)
 EXCLUDES="$INSTALLHOME/exclude.txt"    # Patterns to exclude (one per line)
 
 # ------------------------------------------------------------------------------
-# COMMAND ALIASES
+# COMMAND ALIASES (resolved per-mode by derive_paths)
 # ------------------------------------------------------------------------------
-# Use absolute paths to avoid issues with shell aliases that might add
-# interactive prompts (e.g., alias rm='rm -i'). Only used in local mode.
+# These are the cp/mv/rm used by the rotation phase, in BOTH modes. derive_paths
+# sets them appropriately:
+#   - Local mode: the real binary path (via command -v), so a shell alias
+#     (e.g. alias rm='rm -i') can't inject a prompt, without hardcoding /usr/bin
+#     (cp lives in /bin on macOS/BSD).
+#   - Remote mode: bare names, resolved by the remote host's PATH (its cp/mv/rm
+#     may not live under /usr/bin, e.g. FreeBSD/TrueNAS).
+# The values below are only fallbacks if derive_paths is never called.
 
-CP="/usr/bin/cp"
-MV="/usr/bin/mv"
-RM="/usr/bin/rm"
+CP="cp"
+MV="mv"
+RM="rm"
 
 # ------------------------------------------------------------------------------
 # CONCURRENCY CONTROL
@@ -172,25 +178,69 @@ CRON_W="0 12 * * 7 "     # Weekly: noon, Sunday
 # This allows customization without editing the script.
 
 if [ -f "$CONFIGFILE" ]; then
-    # shellcheck source=/etc/rsyncshot/config
+    # shellcheck source=/dev/null
     source "$CONFIGFILE"
 fi
 
 # ------------------------------------------------------------------------------
 # DERIVED PATHS (auto-configured based on mode)
 # ------------------------------------------------------------------------------
-# These are calculated from the settings above. Do not modify directly.
+# derive_paths() computes MODE, DESTINATION, REMOTE_DEST and the cp/mv/rm command
+# names from the settings above. It is a function (rather than inline) so tests
+# can source the script with RSYNCSHOT_SOURCE_ONLY=1 and re-derive paths under
+# different settings without running the main flow.
 
-if [ -n "$REMOTE_HOST" ]; then
-    # Remote mode: backup destination is on a remote server via SSH
-    REMOTE_DEST="$REMOTE_PATH/$HOSTNAME"           # Full path on remote server
-    DESTINATION="$REMOTE_HOST:$REMOTE_DEST"        # rsync-compatible remote path
-    MODE="remote"
-else
-    # Local mode: backup destination is a locally mounted filesystem
-    DESTINATION="$MOUNTDIR/$HOSTNAME"              # Local backup path
-    MODE="local"
-fi
+derive_paths()
+{
+    if [ -n "$REMOTE_HOST" ]; then
+        # Remote mode: backup destination is on a remote server via SSH
+        REMOTE_DEST="$REMOTE_PATH/$HOSTNAME"           # Full path on remote server
+        DESTINATION="$REMOTE_HOST:$REMOTE_DEST"        # rsync-compatible remote path
+        MODE="remote"
+        CP="cp"; MV="mv"; RM="rm"                      # resolved by remote PATH
+    else
+        # Local mode: backup destination is a locally mounted filesystem
+        DESTINATION="$MOUNTDIR/$HOSTNAME"              # Local backup path
+        MODE="local"
+        CP=$(command -v cp || echo cp)
+        MV=$(command -v mv || echo mv)
+        RM=$(command -v rm || echo rm)
+    fi
+}
+
+# is_mounted TARGET [MOUNTS_FILE] — true if TARGET is an exact mount point.
+# Reads /proc/mounts by default; pass a fixture file as the 2nd arg for tests.
+# Matches field 2 exactly (spaces are encoded as \040 in /proc/mounts) so
+# /media/backup does NOT match /media/backup2 and regex metacharacters in the
+# path stay literal.
+is_mounted()
+{
+    local target="$1"
+    local mounts="${2:-/proc/mounts}"
+    [ -r "$mounts" ] || return 1
+    # Encode spaces as \040 to match /proc/mounts' field 2. Pass via the
+    # environment (ENVIRON) rather than awk -v, because -v processes backslash
+    # escapes and would turn \040 back into a literal space before comparison.
+    local target_esc=${target// /\\040}
+    RSYNCSHOT_MNT="$target_esc" awk '$2 == ENVIRON["RSYNCSHOT_MNT"] { found = 1 } END { exit(found ? 0 : 1) }' "$mounts"
+}
+
+# require_destination_configured — abort before any write if the destination
+# would resolve to a filesystem root. A blank REMOTE_PATH/MOUNTDIR otherwise
+# makes DESTINATION "/$HOSTNAME" (remote or local root), which the rotation
+# phase would then rm -rf / --delete against.
+require_destination_configured()
+{
+    if [ "$MODE" = "remote" ]; then
+        [ -n "$REMOTE_PATH" ] || error "REMOTE_PATH is empty — refusing to use the remote filesystem root as the backup destination."
+        case "$REMOTE_PATH" in /*) ;; *) error "REMOTE_PATH must be an absolute path: $REMOTE_PATH" ;; esac
+    else
+        [ -n "$MOUNTDIR" ] || error "MOUNTDIR is empty — refusing to use the local filesystem root as the backup destination."
+        case "$MOUNTDIR" in /*) ;; *) error "MOUNTDIR must be an absolute path: $MOUNTDIR" ;; esac
+    fi
+}
+
+derive_paths
 
 # ==============================================================================
 # UTILITY FUNCTIONS
@@ -279,11 +329,14 @@ run_cmd()
 {
     if [ "$MODE" = "remote" ]; then
         if [ -n "$SSH_IDENTITY_FILE" ]; then
+            # shellcheck disable=SC2029  # command string is meant to expand on the remote shell
             ssh -i "$SSH_IDENTITY_FILE" "$REMOTE_HOST" "$@"
         else
+            # shellcheck disable=SC2029
             ssh "$REMOTE_HOST" "$@"
         fi
     else
+        # shellcheck disable=SC2294  # eval mirrors the remote shell parsing the same command string
         eval "$@"
     fi
 }
@@ -318,18 +371,18 @@ list_snapshots()
 {
     # Verify we can access the destination
     if [ "$MODE" = "remote" ]; then
-        SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=5"
+        SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=5)
         if [ -n "$SSH_IDENTITY_FILE" ]; then
-            SSH_OPTS="$SSH_OPTS -i $SSH_IDENTITY_FILE"
+            SSH_OPTS+=(-i "$SSH_IDENTITY_FILE")
         fi
-        if ! ssh $SSH_OPTS "$REMOTE_HOST" "true" 2>/dev/null; then
+        if ! ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "true" 2>/dev/null; then
             error "Cannot connect to $REMOTE_HOST via SSH."
         fi
     else
         if [ ! -d "$MOUNTDIR" ]; then
             error "$MOUNTDIR doesn't exist."
         fi
-        if ! grep -qs "$MOUNTDIR" /proc/mounts 2>/dev/null; then
+        if ! is_mounted "$MOUNTDIR"; then
             error "$MOUNTDIR is not mounted."
         fi
     fi
@@ -365,6 +418,10 @@ list_snapshots()
 
     run_cmd "$LIST_CMD"
     echo ""
+    echo "Note: sizes are apparent per-snapshot usage. Unchanged files are hard-linked"
+    echo "and shared across snapshots, so these figures overlap and do not sum to the"
+    echo "actual disk used."
+    echo ""
 }
 
 # ------------------------------------------------------------------------------
@@ -399,14 +456,14 @@ show_status()
 
     if [ -f "$INCLUDES" ]; then
         # Count non-empty, non-comment lines
-        INCLUDE_COUNT=$(grep -cv '^[[:space:]]*#\|^[[:space:]]*$' "$INCLUDES" 2>/dev/null || echo 0)
+        INCLUDE_COUNT=$(grep -cv '^[[:space:]]*#\|^[[:space:]]*$' "$INCLUDES" 2>/dev/null)
         echo "  ✓ Include file: $INCLUDES ($INCLUDE_COUNT directories)"
     else
         echo "  ✗ Include file NOT found: $INCLUDES"
     fi
 
     if [ -f "$EXCLUDES" ]; then
-        EXCLUDE_COUNT=$(grep -cv '^#\|^$' "$EXCLUDES" 2>/dev/null || echo 0)
+        EXCLUDE_COUNT=$(grep -cv '^#\|^$' "$EXCLUDES" 2>/dev/null)
         echo "  ✓ Exclude file: $EXCLUDES ($EXCLUDE_COUNT patterns)"
     else
         echo "  ✗ Exclude file NOT found: $EXCLUDES"
@@ -432,11 +489,11 @@ show_status()
         fi
 
         # Test SSH connectivity
-        SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=5"
+        SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=5)
         if [ -n "$SSH_IDENTITY_FILE" ]; then
-            SSH_OPTS="$SSH_OPTS -i $SSH_IDENTITY_FILE"
+            SSH_OPTS+=(-i "$SSH_IDENTITY_FILE")
         fi
-        if ssh $SSH_OPTS "$REMOTE_HOST" "true" 2>/dev/null; then
+        if ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "true" 2>/dev/null; then
             echo "  ✓ SSH connection: OK"
 
             # Check if backup directory exists
@@ -454,7 +511,7 @@ show_status()
         if [ -d "$MOUNTDIR" ]; then
             echo "  ✓ Mount point exists"
 
-            if grep -qs "$MOUNTDIR" /proc/mounts 2>/dev/null; then
+            if is_mounted "$MOUNTDIR"; then
                 echo "  ✓ Filesystem mounted"
 
                 if [ -d "$MOUNTDIR/$HOSTNAME" ]; then
@@ -473,7 +530,7 @@ show_status()
     # --- Cron jobs ---
     echo ""
     echo "Scheduled Backups:"
-    CRON_JOBS=$(crontab -l 2>/dev/null | grep -c "rsyncshot" || echo 0)
+    CRON_JOBS=$(crontab -l 2>/dev/null | grep -c "rsyncshot")
     if [ "$CRON_JOBS" -gt 0 ]; then
         echo "  ✓ $CRON_JOBS cron job(s) installed:"
         crontab -l 2>/dev/null | grep "rsyncshot" | while read -r line; do
@@ -505,7 +562,8 @@ show_status()
         LAST_BACKUP=$(grep "completed successfully" "$LOGFILE" 2>/dev/null | tail -1)
         if [ -n "$LAST_BACKUP" ]; then
             # Extract timestamp from [YYYY-MM-DD HH:MM:SS] format (portable, no Perl regex)
-            LAST_TIME=$(echo "$LAST_BACKUP" | sed 's/.*\[\([^]]*\)\].*/\1/')
+            LAST_TIME=${LAST_BACKUP#*[}
+            LAST_TIME=${LAST_TIME%%]*}
             echo "  Last successful backup: $LAST_TIME"
         fi
     else
@@ -516,7 +574,7 @@ show_status()
     echo ""
     echo "Snapshots:"
     if [ "$MODE" = "remote" ]; then
-        if ssh $SSH_OPTS "$REMOTE_HOST" "true" 2>/dev/null; then
+        if ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "true" 2>/dev/null; then
             SNAP_COUNT=$(run_cmd "ls -d '$REMOTE_DEST'/*/ 2>/dev/null | wc -l" 2>/dev/null || echo 0)
             if [ "$SNAP_COUNT" -gt 0 ]; then
                 echo "  $SNAP_COUNT snapshot(s) found (run 'rsyncshot list' for details)"
@@ -528,7 +586,7 @@ show_status()
         fi
     else
         if [ -d "$MOUNTDIR/$HOSTNAME" ]; then
-            SNAP_COUNT=$(ls -d "$MOUNTDIR/$HOSTNAME"/*/ 2>/dev/null | wc -l || echo 0)
+            SNAP_COUNT=$(find "$MOUNTDIR/$HOSTNAME" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
             if [ "$SNAP_COUNT" -gt 0 ]; then
                 echo "  $SNAP_COUNT snapshot(s) found (run 'rsyncshot list' for details)"
             else
@@ -559,15 +617,18 @@ show_status()
 
 setup()
 {
+    # --- Refuse to operate against a filesystem root ---
+    require_destination_configured
+
     # --- Verify destination is accessible ---
     if [ "$MODE" = "remote" ]; then
         # Remote mode: test SSH connectivity with key-based auth
         echo "Testing SSH connection to $REMOTE_HOST..."
-        SSH_TEST_OPTS="-o BatchMode=yes -o ConnectTimeout=5"
+        SSH_TEST_OPTS=(-o BatchMode=yes -o ConnectTimeout=5)
         if [ -n "$SSH_IDENTITY_FILE" ]; then
-            SSH_TEST_OPTS="$SSH_TEST_OPTS -i $SSH_IDENTITY_FILE"
+            SSH_TEST_OPTS+=(-i "$SSH_IDENTITY_FILE")
         fi
-        if ! ssh $SSH_TEST_OPTS "$REMOTE_HOST" "echo 'SSH connection successful'" 2>/dev/null; then
+        if ! ssh "${SSH_TEST_OPTS[@]}" "$REMOTE_HOST" "echo 'SSH connection successful'" 2>/dev/null; then
             error "Cannot connect to $REMOTE_HOST via SSH. Ensure SSH key auth is configured."
         fi
     else
@@ -714,6 +775,14 @@ EOF
 # MAIN SCRIPT
 # ==============================================================================
 
+# --- Test hook: stop here when sourced for unit testing ---
+# Tests do `RSYNCSHOT_SOURCE_ONLY=1 source ./rsyncshot` to get the functions and
+# derived config without executing the main flow (root check, backup, rotation).
+if [ "${RSYNCSHOT_SOURCE_ONLY:-0}" = "1" ]; then
+    # shellcheck disable=SC2317  # the exit is reachable when run (not sourced)
+    return 0 2>/dev/null || exit 0
+fi
+
 # --- Handle help command (before root check, so anyone can view help) ---
 TYPE=$(tr '[:lower:]' '[:upper:]' <<< "$1")
 if [ "$TYPE" = "HELP" ]; then help; exit; fi
@@ -800,6 +869,7 @@ if [ "$TYPE" = "SETUP" ]; then setup; exit; fi
 # --- Validate second argument (retention count) ---
 # Must be numeric only (e.g., 24 for 24 hourly snapshots)
 if ! [[ $2 =~ ^[0-9]+$ ]]; then error "max snapshots must be a number (e.g., 24)."; fi
+if [ "$2" -lt 1 ]; then error "max snapshots must be at least 1."; fi
 MAX=$(($2-1))  # Convert count to max index (e.g., 24 -> 23 for indices 0-23)
 
 # --- Validate include file exists and contains valid directories ---
@@ -815,6 +885,9 @@ done < "$INCLUDES"
 # --- Validate exclude file exists ---
 if [ ! -f "$EXCLUDES" ]; then error "Exclude file $EXCLUDES not found."; fi
 
+# --- Refuse to operate against a filesystem root ---
+require_destination_configured
+
 # --- Mode-specific destination validation ---
 if [ "$MODE" = "remote" ]; then
     # Verify SSH identity file exists if specified
@@ -825,11 +898,11 @@ if [ "$MODE" = "remote" ]; then
     # Remote mode: verify SSH connectivity
     # Uses BatchMode to fail immediately if key auth doesn't work
     # Uses ConnectTimeout to fail quickly if host is unreachable
-    SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=10"
+    SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10)
     if [ -n "$SSH_IDENTITY_FILE" ]; then
-        SSH_OPTS="$SSH_OPTS -i $SSH_IDENTITY_FILE"
+        SSH_OPTS+=(-i "$SSH_IDENTITY_FILE")
     fi
-    if ! ssh $SSH_OPTS "$REMOTE_HOST" "true" 2>/dev/null; then
+    if ! ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "true" 2>/dev/null; then
         error "Cannot connect to $REMOTE_HOST via SSH."
     fi
 else
@@ -840,9 +913,9 @@ else
     # This supports fstab entries with 'noauto' option
     # RSYNCSHOT_SKIP_MOUNT_CHECK can be set for testing purposes
     if [ "${RSYNCSHOT_SKIP_MOUNT_CHECK:-}" != "1" ]; then
-        if ! grep -qs "$MOUNTDIR" /proc/mounts >> /dev/null 2>&1; then
+        if ! is_mounted "$MOUNTDIR"; then
             mount "$MOUNTDIR" >> /dev/null 2>&1
-            if ! grep -qs "$MOUNTDIR" /proc/mounts >> /dev/null 2>&1; then
+            if ! is_mounted "$MOUNTDIR"; then
                 error "$MOUNTDIR not mounted and mount attempt failed."
             fi
         fi
@@ -864,6 +937,14 @@ fi
 #   -a          Archive mode (preserves permissions, timestamps, symlinks, etc.)
 #   -v          Verbose output
 #   -h          Human-readable sizes
+#   -R          Relative: store each source under its full path (e.g.
+#               /usr/local/bin -> latest/usr/local/bin). Preserves the absolute
+#               path and prevents two sources with the same basename (e.g.
+#               /usr/local/bin and /usr/bin) from colliding into latest/bin and
+#               clobbering each other via --delete.
+#   --numeric-ids  Keep numeric uid/gid instead of remapping by name on the
+#               destination — preserves /etc and /home ownership on restore even
+#               when the remote has a different passwd/group database.
 #   --times     Preserve modification times
 #   --delete    Delete files in destination that don't exist in source
 #   --delete-excluded  Also delete excluded files from destination
@@ -876,7 +957,9 @@ RSYNC_FAILED=false
 # Set RSYNC_RSH environment variable if using custom SSH identity
 # rsync automatically uses this variable for the remote shell command
 if [ "$MODE" = "remote" ] && [ -n "$SSH_IDENTITY_FILE" ]; then
-    export RSYNC_RSH="ssh -i $SSH_IDENTITY_FILE"
+    # Single-quote the path so rsync's quote-aware parsing of RSYNC_RSH handles
+    # an identity path containing spaces.
+    export RSYNC_RSH="ssh -i '$SSH_IDENTITY_FILE'"
 fi
 
 # Read include file and sync each directory
@@ -888,7 +971,7 @@ while IFS= read -r SOURCE || [ -n "$SOURCE" ]; do
 
     if [ "$DRYRUN" = true ]; then
         # Dry run: show what would be transferred
-        rsync -avh --times --timeout=600 \
+        rsync -avhR --numeric-ids --times --timeout=600 \
               --delete --delete-excluded \
               --exclude-from="$EXCLUDES" \
               --dry-run \
@@ -896,7 +979,7 @@ while IFS= read -r SOURCE || [ -n "$SOURCE" ]; do
         RSYNC_EXIT=$?
     else
         # Actual backup
-        rsync -avh --times --timeout=600 \
+        rsync -avhR --numeric-ids --times --timeout=600 \
               --delete --delete-excluded \
               --exclude-from="$EXCLUDES" \
               "$SOURCE" "$DESTINATION"/latest

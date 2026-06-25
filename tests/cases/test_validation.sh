@@ -80,6 +80,59 @@ test_accepts_valid_snapshot_types() {
 }
 
 # ------------------------------------------------------------------------------
+# Test: Rejects a retention count of zero
+# ------------------------------------------------------------------------------
+test_rejects_zero_count() {
+    local output
+    output=$(sudo "$SCRIPT_PATH" "manual" "0" 2>&1)
+    local exit_code=$?
+
+    assert_exit_code 1 "$exit_code" "should reject count 0" || return 1
+    assert_contains "$output" "at least 1" "should explain minimum count" || return 1
+}
+
+# ------------------------------------------------------------------------------
+# Test: Refuses an empty MOUNTDIR (would resolve to the filesystem root)
+# ------------------------------------------------------------------------------
+test_rejects_empty_mountdir() {
+    setup_test_env
+    cat > "$TEST_CONFIG_DIR/config" <<EOF
+REMOTE_HOST=""
+MOUNTDIR=""
+EOF
+    create_test_includes >/dev/null
+    create_test_excludes >/dev/null
+
+    local output
+    output=$(sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" manual 1 2>&1)
+    local exit_code=$?
+
+    teardown_test_env
+
+    assert_exit_code 1 "$exit_code" "empty MOUNTDIR should be rejected" || return 1
+    assert_contains "$output" "MOUNTDIR is empty" "should explain the empty-MOUNTDIR refusal" || return 1
+}
+
+# ------------------------------------------------------------------------------
+# Test: status produces no stderr noise (the grep "0\n0" integer-test bug)
+# ------------------------------------------------------------------------------
+test_status_no_stderr_noise() {
+    setup_test_env
+    create_test_config >/dev/null
+    create_test_includes >/dev/null
+    create_test_excludes >/dev/null
+
+    local stderr_file="$TEST_DIR/status.stderr"
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" status >/dev/null 2>"$stderr_file"
+    local err
+    err=$(cat "$stderr_file")
+
+    teardown_test_env
+
+    assert_no_stderr "$err" "status should emit no stderr (no 'integer expression' noise)" || return 1
+}
+
+# ------------------------------------------------------------------------------
 # Run tests
 # ------------------------------------------------------------------------------
 run_validation_tests() {
@@ -95,6 +148,9 @@ run_validation_tests() {
     run_test "rejects alphabetic retention count" test_rejects_alpha_retention_count
     run_test "rejects mixed retention count" test_rejects_mixed_retention_count
     run_test "accepts valid snapshot types" test_accepts_valid_snapshot_types
+    run_test "rejects retention count of zero" test_rejects_zero_count
+    run_test "refuses empty MOUNTDIR" test_rejects_empty_mountdir
+    run_test "status emits no stderr noise" test_status_no_stderr_noise
 
     teardown_test_env
 }

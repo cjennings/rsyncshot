@@ -6,6 +6,7 @@
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+# shellcheck disable=SC2034  # reserved for future use, kept alongside RED/GREEN
 YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
@@ -131,9 +132,9 @@ assert_exit_code() {
 assert_contains() {
     local haystack="$1"
     local needle="$2"
-    local message="${3:-Output should contain '$needle'}"
+    local message="${3:-Output should contain: $needle}"
 
-    if echo "$haystack" | grep -q "$needle"; then
+    if echo "$haystack" | grep -qF -- "$needle"; then
         return 0
     else
         echo -e "${RED}FAIL${NC}: $message"
@@ -146,9 +147,9 @@ assert_contains() {
 assert_not_contains() {
     local haystack="$1"
     local needle="$2"
-    local message="${3:-Output should not contain '$needle'}"
+    local message="${3:-Output should not contain: $needle}"
 
-    if ! echo "$haystack" | grep -q "$needle"; then
+    if ! echo "$haystack" | grep -qF -- "$needle"; then
         return 0
     else
         echo -e "${RED}FAIL${NC}: $message"
@@ -204,6 +205,48 @@ assert_dir_not_exists() {
         echo -e "${RED}FAIL${NC}: $message"
         return 1
     fi
+}
+
+assert_no_stderr() {
+    local stderr_content="$1"
+    local message="${2:-Should produce no stderr}"
+
+    if [ -z "$stderr_content" ]; then
+        return 0
+    else
+        echo -e "${RED}FAIL${NC}: $message"
+        echo "  stderr was: $stderr_content"
+        return 1
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Command-capture shim
+# ------------------------------------------------------------------------------
+# make_command_shim CMD [CMD...] — create a directory of fake commands that
+# record their argv (one argument per line, "---" between invocations) to
+# <dir>/<cmd>.args and exit 0. Put the dir at the front of PATH to intercept
+# those commands and assert on HOW they were called, without real I/O, network,
+# or transfers. Echoes the shim directory path; the caller removes it.
+#
+# Usage:
+#   shim=$(make_command_shim rsync)
+#   PATH="$shim:$PATH" "$SCRIPT_PATH" dryrun manual 1
+#   assert_contains "$(cat "$shim/rsync.args")" "--numeric-ids" ...
+#   rm -rf "$shim"
+make_command_shim() {
+    local shim_dir
+    shim_dir=$(mktemp -d)
+    local cmd
+    for cmd in "$@"; do
+        cat > "$shim_dir/$cmd" <<SHIM
+#!/usr/bin/env bash
+{ printf '%s\n' "\$@"; echo "---"; } >> "$shim_dir/${cmd}.args"
+exit 0
+SHIM
+        chmod +x "$shim_dir/$cmd"
+    done
+    echo "$shim_dir"
 }
 
 # ------------------------------------------------------------------------------

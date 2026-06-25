@@ -39,7 +39,7 @@ EOF
     create_test_excludes
 
     # Run setup (will fail on some checks but should still add cron)
-    sudo INSTALLHOME="$TEST_CONFIG_DIR" SCRIPTLOC="/tmp/rsyncshot-test" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" setup 2>&1 >/dev/null || true
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" SCRIPTLOC="/tmp/rsyncshot-test" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" setup >/dev/null 2>&1 || true
 
     # Check crontab contains rsyncshot entries
     local crontab_content
@@ -72,8 +72,8 @@ EOF
     create_test_excludes
 
     # Run setup twice
-    sudo INSTALLHOME="$TEST_CONFIG_DIR" SCRIPTLOC="/tmp/rsyncshot-test" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" setup 2>&1 >/dev/null || true
-    sudo INSTALLHOME="$TEST_CONFIG_DIR" SCRIPTLOC="/tmp/rsyncshot-test" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" setup 2>&1 >/dev/null || true
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" SCRIPTLOC="/tmp/rsyncshot-test" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" setup >/dev/null 2>&1 || true
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" SCRIPTLOC="/tmp/rsyncshot-test" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" setup >/dev/null 2>&1 || true
 
     # Count rsyncshot entries
     local crontab_content hourly_count
@@ -105,7 +105,7 @@ EOF
     create_test_excludes
 
     # Run setup
-    sudo INSTALLHOME="$TEST_CONFIG_DIR" SCRIPTLOC="/tmp/rsyncshot-test" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" setup 2>&1 >/dev/null || true
+    sudo INSTALLHOME="$TEST_CONFIG_DIR" SCRIPTLOC="/tmp/rsyncshot-test" RSYNCSHOT_SKIP_MOUNT_CHECK=1 "$SCRIPT_PATH" setup >/dev/null 2>&1 || true
 
     # Check custom job still exists
     local crontab_content

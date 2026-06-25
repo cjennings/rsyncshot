@@ -22,6 +22,7 @@ QUICK=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         -v|--verbose)
+            # shellcheck disable=SC2034  # reserved flag; verbose output not yet wired
             VERBOSE=true
             shift
             ;;
@@ -90,12 +91,15 @@ run_test_file() {
 
 # Run test suites
 run_test_file "$SCRIPT_DIR/cases/test_validation.sh" "validation"
+run_test_file "$SCRIPT_DIR/cases/test_functions.sh" "functions"
 run_test_file "$SCRIPT_DIR/cases/test_includes.sh" "includes"
 run_test_file "$SCRIPT_DIR/cases/test_dryrun.sh" "dryrun"
+run_test_file "$SCRIPT_DIR/cases/test_rsync_flags.sh" "rsync_flags"
 
 if [ "$QUICK" = false ]; then
     run_test_file "$SCRIPT_DIR/cases/test_backup.sh" "backup"
     run_test_file "$SCRIPT_DIR/cases/test_cron.sh" "cron"
+    run_test_file "$SCRIPT_DIR/cases/test_remote.sh" "remote"
 else
     echo ""
     echo "Skipping slow tests (backup, cron) - use without --quick to run all"
